@@ -1,16 +1,28 @@
 // api/overpass.js
-// Vercel serverless function that proxies Overpass API queries server-side,
-// racing all mirrors in parallel so the whole call finishes well inside
-// Vercel's default function time limit (10s on Hobby).
+// Vercel serverless function that proxies Overpass API queries server-side.
+// Tries mirrors one at a time (not all at once — simultaneous bursts trip
+// these free servers' abuse protection) and identifies itself with a proper
+// User-Agent, since Overpass mirrors are far more likely to rate-limit or
+// silently drop requests that look anonymous/automated.
 
 export const config = { maxDuration: 20 }
 
 const MIRRORS = [
+  'https://overpass.openstreetmap.fr/api/interpreter',
+  'https://overpass.osm.ch/api/interpreter',
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
-  'https://overpass.private.coffee/api/interpreter',
   'https://lz4.overpass-api.de/api/interpreter',
 ]
+
+const HEADERS = {
+  'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+  'User-Agent': 'ForensiTwin/1.0 (forensic collision reconstruction tool; https://forensi-twin.vercel.app)',
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms))
+}
 
 async function askMirror(url, query, timeoutMs) {
   const host = new URL(url).host
@@ -19,10 +31,11 @@ async function askMirror(url, query, timeoutMs) {
   try {
     const r = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+      headers: HEADERS,
       body: 'data=' + encodeURIComponent(query),
       signal: controller.signal,
     })
+    if (r.status === 429) throw new Error('HTTP 429 (rate limited)')
     if (!r.ok) throw new Error(`HTTP ${r.status}`)
     const json = await r.json()
     if (!Array.isArray(json.elements)) throw new Error('Unexpected response shape')
@@ -46,14 +59,21 @@ export default async function handler(req, res) {
     return
   }
 
-  // Race every mirror at once (8s each) instead of trying them in sequence —
-  // sequential attempts could add up to well over Vercel's function timeout.
-  const attempts = MIRRORS.map((url) => askMirror(url, query, 8000))
-  try {
-    const winner = await Promise.any(attempts)
-    res.status(200).json(winner)
-  } catch (agg) {
-    const errors = (agg.errors || []).map((e) => e.message)
-    res.status(502).json({ error: 'All Overpass servers failed.\n' + errors.join('\n') })
+  // Try mirrors one at a time, not all in parallel — a burst of simultaneous
+  // requests from the same server is what trips these mirrors' rate limits.
+  const start = Math.floor(Math.random() * MIRRORS.length)
+  const errors = []
+  for (let i = 0; i < MIRRORS.length; i++) {
+    const url = MIRRORS[(start + i) % MIRRORS.length]
+    try {
+      const result = await askMirror(url, query, 3500)
+      res.status(200).json(result)
+      return
+    } catch (e) {
+      errors.push(e.message)
+      await sleep(150) // brief gap between attempts, same courtesy reason
+    }
   }
+
+  res.status(502).json({ error: 'All Overpass servers failed.\n' + errors.join('\n') })
 }

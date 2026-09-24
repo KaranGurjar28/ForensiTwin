@@ -4,9 +4,10 @@
 // locally since it doesn't serve the /api route.
 
 export const MIRRORS = [
+  'https://overpass.openstreetmap.fr/api/interpreter',
+  'https://overpass.osm.ch/api/interpreter',
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
-  'https://overpass.private.coffee/api/interpreter',
   'https://lz4.overpass-api.de/api/interpreter',
 ]
 
