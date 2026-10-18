@@ -1,21 +1,21 @@
 // api/overpass.js
 // Vercel serverless function that proxies Overpass API queries server-side AND
-// is cached at Vercel's CDN/edge layer (Cache-Control: s-maxage + swr).
+// is cached at Vercel's CDN/edge layer (Cache-Control: s-maxage + swr + SIE).
 //
-// Why caching matters more than retry logic: the free public Overpass mirrors
-// rate-limit by IP, and Vercel serverless functions share IPs across many
-// unrelated projects. No retry strategy can guarantee a mirror responds at
-// the exact moment a given user clicks the button — that's inherent to using
-// free shared infrastructure, not something fixable in application code.
-// Caching sidesteps the problem: once ANY request for a given location
-// succeeds, every later request for that same area (from anyone, for up to
-// a week) is served instantly from Vercel's edge cache and never touches
-// Overpass again, regardless of whether the mirrors are currently healthy.
+// Empirically (observed from this project's own production traffic):
+//   - overpass-api.de / lz4.overpass-api.de: consistently unreachable from
+//     Vercel's network (fails fast, not a timeout) — tried last, short budget.
+//   - overpass.kumi.systems: reachable but rate-limits aggressively (429).
+//   - overpass.osm.ch: the most consistently reachable mirror from Vercel.
+// This ordering + budget reflects that, and is easy to re-tune — nothing here
+// is fundamental, just tuned to what actually responds from this host.
 //
-// This only works for GET requests (Vercel's CDN does not cache POST
-// responses), so this endpoint takes lat/lon/radius as query params and
-// builds the Overpass query itself, rather than accepting a prebuilt query
-// string in a POST body.
+// Caching is the real fix for long-term reliability: once ANY request for a
+// location succeeds, it's cached at the edge for a day, served stale for up
+// to a week if mirrors are down, and — critically — `stale-if-error` means
+// Vercel keeps serving the last good copy even if every mirror fails on a
+// later revalidation. That's what stops "worked for days, then broke" for
+// any location that was ever successfully loaded once.
 
 export const config = { maxDuration: 30 }
 
@@ -33,17 +33,15 @@ function buildQuery(lat, lon, radius) {
 out geom qt;`
 }
 
-// Ordered by data completeness/reliability, not alphabetically:
-// overpass-api.de and lz4.overpass-api.de are the same well-maintained
-// cluster with the most complete global coverage; kumi.systems is also a
-// long-running full mirror. The .fr/.ch instances are smaller community
-// mirrors with sparser regional coverage in some areas, so they're last.
+// Ordered by observed reachability from Vercel's network, not by data
+// completeness — a mirror that never connects is worse than a slightly
+// less-complete one that actually answers.
 const MIRRORS = [
-  { url: 'https://overpass-api.de/api/interpreter', timeoutMs: 8000 },
-  { url: 'https://overpass.kumi.systems/api/interpreter', timeoutMs: 8000 },
-  { url: 'https://lz4.overpass-api.de/api/interpreter', timeoutMs: 6000 },
-  { url: 'https://overpass.osm.ch/api/interpreter', timeoutMs: 4000 },
-  { url: 'https://overpass.openstreetmap.fr/api/interpreter', timeoutMs: 4000 },
+  { url: 'https://overpass.osm.ch/api/interpreter', timeoutMs: 9000 },
+  { url: 'https://overpass.kumi.systems/api/interpreter', timeoutMs: 7000 },
+  { url: 'https://overpass.openstreetmap.fr/api/interpreter', timeoutMs: 5000 },
+  { url: 'https://lz4.overpass-api.de/api/interpreter', timeoutMs: 3500 },
+  { url: 'https://overpass-api.de/api/interpreter', timeoutMs: 3500 },
 ]
 
 const HEADERS = {
@@ -93,44 +91,43 @@ export default async function handler(req, res) {
     return
   }
 
-  const cacheKeyLat = lat.toFixed(4)
-  const cacheKeyLon = lon.toFixed(4)
-
   const query = buildQuery(lat, lon, radius)
   const errors = []
-  let weakResult = null // technically-successful but empty (0 elements) response, kept as a last resort
+  const emptyResults = [] // mirrors that cleanly responded but found 0 elements
 
-  // Two full passes through the mirror list: transient blips (a single
-  // failed connection, a momentary 5xx) are common and don't mean a mirror
-  // is actually down, so it's worth trying everything twice before giving up.
-  for (let pass = 0; pass < 2 && !weakResult; pass++) {
-    for (const { url, timeoutMs } of MIRRORS) {
-      try {
-        const result = await askMirror(url, query, timeoutMs)
-        if (result.json.elements.length > 0) {
-          res.setHeader('Cache-Control', 'public, max-age=0, s-maxage=86400, stale-while-revalidate=604800')
-          res.setHeader('X-Cache-Key', `${cacheKeyLat},${cacheKeyLon},${radius}`)
-          res.status(200).json(result)
-          return
-        }
-        if (!weakResult) weakResult = result
-      } catch (e) {
-        errors.push(`[pass ${pass + 1}] ${e.message}`)
-        await sleep(150)
+  // One pass only — hitting the same mirror set twice in quick succession is
+  // what tends to trigger their rate limits in the first place.
+  for (const { url, timeoutMs } of MIRRORS) {
+    try {
+      const result = await askMirror(url, query, timeoutMs)
+      if (result.json.elements.length > 0) {
+        res.setHeader('Cache-Control', 'public, max-age=0, s-maxage=86400, stale-while-revalidate=604800, stale-if-error=2592000')
+        res.status(200).json(result)
+        return
       }
+      emptyResults.push(result)
+    } catch (e) {
+      errors.push(e.message)
+      await sleep(200)
     }
   }
 
-  if (weakResult) {
-    // A genuinely quiet area (few/no roads in range) is legitimate and still
-    // worth caching, just for a shorter window in case it was actually a
-    // coverage gap rather than a truly empty area.
-    res.setHeader('Cache-Control', 'public, max-age=0, s-maxage=3600, stale-while-revalidate=86400')
-    res.status(200).json(weakResult)
+  // A mirror that cleanly answers "nothing here" is only trustworthy once at
+  // least two independent mirrors agree — a single empty response could just
+  // mean that one mirror's index is behind, not that the area is actually
+  // empty. If fewer than two agree, treat it as inconclusive, not a result.
+  if (emptyResults.length >= 2) {
+    res.setHeader('Cache-Control', 'public, max-age=0, s-maxage=3600, stale-while-revalidate=86400, stale-if-error=2592000')
+    res.status(200).json(emptyResults[0])
     return
   }
 
-  // Do not cache outright failures — the next request should try again fresh.
+  // Do not cache outright failures or single-mirror "empty" results — the
+  // next request (from this user clicking "Try again", or anyone else) should
+  // get a fresh attempt rather than being stuck with an inconclusive result.
   res.setHeader('Cache-Control', 'no-store')
-  res.status(502).json({ error: 'All Overpass servers failed.\n' + errors.join('\n') })
+  const reason = emptyResults.length === 1
+    ? `Only one mirror (${emptyResults[0].mirror}) responded, with no data — inconclusive rather than confirmed-empty.\n`
+    : ''
+  res.status(502).json({ error: reason + 'All Overpass servers failed or gave inconclusive results.\n' + errors.join('\n') })
 }
