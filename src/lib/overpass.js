@@ -1,14 +1,18 @@
-// Overpass API client. Prefers the /api/overpass serverless proxy (avoids
-// browser CORS issues once deployed); falls back to calling public mirrors
-// directly from the browser, which is what plain `vite dev` will always do
-// locally since it doesn't serve the /api route.
+// Overpass API client. Prefers the /api/overpass serverless proxy, which is
+// cached at Vercel's CDN edge — once any request for a location succeeds,
+// repeat requests for that same area are served instantly from cache and
+// never touch Overpass again, which is what makes this reliable long-term
+// (the free public mirrors rate-limit shared cloud IPs unpredictably, so
+// no retry strategy alone can guarantee a mirror answers on every click).
+// Falls back to calling public mirrors directly from the browser, which is
+// what plain `vite dev` will always do locally since it doesn't serve /api.
 
 export const MIRRORS = [
-  'https://overpass.openstreetmap.fr/api/interpreter',
-  'https://overpass.osm.ch/api/interpreter',
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
   'https://lz4.overpass-api.de/api/interpreter',
+  'https://overpass.osm.ch/api/interpreter',
+  'https://overpass.openstreetmap.fr/api/interpreter',
 ]
 
 const ROAD_CLASSES =
@@ -27,26 +31,20 @@ export function buildQuery(lat, lon, radius) {
 out geom qt;`
 }
 
-async function tryProxy(query, timeoutMs, outerSignal) {
+async function tryProxy(lat, lon, radius, timeoutMs, outerSignal) {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(new Error('timeout')), timeoutMs)
   const onAbort = () => ctrl.abort(outerSignal.reason)
   outerSignal?.addEventListener('abort', onAbort)
   try {
-    const res = await fetch('/api/overpass', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query }),
-      signal: ctrl.signal,
-    })
-    // Plain `vite dev` has no /api route and returns the index.html fallback
-    // (200, text/html) or a 404 — either way, that's not a real proxy response.
+    const url = `/api/overpass?lat=${lat}&lon=${lon}&radius=${radius}`
+    const res = await fetch(url, { method: 'GET', signal: ctrl.signal })
     const ct = res.headers.get('content-type') || ''
     if (!ct.includes('application/json')) throw new Error('proxy unavailable')
     const body = await res.json()
     if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`)
     if (!Array.isArray(body.json?.elements)) throw new Error('unexpected response')
-    return { json: body.json, mirror: body.mirror || 'proxy' }
+    return { json: body.json, mirror: body.mirror || 'proxy', fromCache: res.headers.get('x-vercel-cache') === 'HIT' }
   } finally {
     clearTimeout(timer)
     outerSignal?.removeEventListener('abort', onAbort)
@@ -78,26 +76,25 @@ async function tryMirror(url, query, timeoutMs, outerSignal) {
 
 /**
  * Fetch roads + buildings around a point.
- * Tries the serverless proxy first, then falls back to calling public
- * Overpass mirrors directly from the browser (rotating through them so load
- * is spread, with a random start point).
+ * Tries the serverless proxy first (cached at the edge — see module header),
+ * then falls back to calling public Overpass mirrors directly from the
+ * browser, rotating through them so load is spread, with a random start.
  */
-export async function fetchOsm(lat, lon, radius = 800, { signal, onStatus, timeoutMs = 22000 } = {}) {
+export async function fetchOsm(lat, lon, radius = 800, { signal, onStatus, timeoutMs = 25000 } = {}) {
   const key = `${lat.toFixed(4)},${lon.toFixed(4)},${radius}`
   if (cache.has(key)) return { json: cache.get(key), mirror: 'cache', cached: true }
 
-  const query = buildQuery(lat, lon, radius)
-
   onStatus?.('Contacting Overpass…')
   try {
-    const { json, mirror } = await tryProxy(query, timeoutMs, signal)
+    const { json, mirror, fromCache } = await tryProxy(lat, lon, radius, timeoutMs, signal)
     cache.set(key, json)
-    return { json, mirror, cached: false }
+    return { json, mirror, cached: fromCache }
   } catch (e) {
     if (signal?.aborted) throw e
     // fall through to direct mirror calls
   }
 
+  const query = buildQuery(lat, lon, radius)
   const start = Math.floor(Math.random() * MIRRORS.length)
   const errors = []
   for (let i = 0; i < MIRRORS.length; i++) {
