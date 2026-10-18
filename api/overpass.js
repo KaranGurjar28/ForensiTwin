@@ -1,21 +1,19 @@
 // api/overpass.js
-// Vercel serverless function that proxies Overpass API queries server-side AND
-// is cached at Vercel's CDN/edge layer (Cache-Control: s-maxage + swr + SIE).
+// Vercel serverless function that fetches road + building geometry for a
+// location, cached at Vercel's CDN edge (s-maxage + stale-while-revalidate +
+// stale-if-error).
 //
-// Empirically (observed from this project's own production traffic):
-//   - overpass-api.de / lz4.overpass-api.de: consistently unreachable from
-//     Vercel's network (fails fast, not a timeout) — tried last, short budget.
-//   - overpass.kumi.systems: reachable but rate-limits aggressively (429).
-//   - overpass.osm.ch: the most consistently reachable mirror from Vercel.
-// This ordering + budget reflects that, and is easy to re-tune — nothing here
-// is fundamental, just tuned to what actually responds from this host.
-//
-// Caching is the real fix for long-term reliability: once ANY request for a
-// location succeeds, it's cached at the edge for a day, served stale for up
-// to a week if mirrors are down, and — critically — `stale-if-error` means
-// Vercel keeps serving the last good copy even if every mirror fails on a
-// later revalidation. That's what stops "worked for days, then broke" for
-// any location that was ever successfully loaded once.
+// Data sources, tried in order:
+//   1. Postpass (postpass.geofabrik.de) — a PostGIS database behind a SQL
+//      query interface, run by Geofabrik. Not part of the free public
+//      Overpass mirror pool, so it isn't subject to the same shared-IP rate
+//      limiting those mirrors apply. Response is GeoJSON, converted below
+//      into the same Overpass-style `elements` shape the rest of this app
+//      already expects, so no other file needs to change.
+//   2. The public Overpass mirror pool, as a fallback — kept because
+//      Postpass is new to this app and unverified under real load; if its
+//      response shape or availability doesn't hold up, the app falls back
+//      to working exactly as it did before this change.
 
 export const config = { maxDuration: 30 }
 
@@ -23,7 +21,7 @@ const ROAD_CLASSES =
   'motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|road|' +
   'motorway_link|trunk_link|primary_link|secondary_link|tertiary_link'
 
-function buildQuery(lat, lon, radius) {
+function buildOverpassQuery(lat, lon, radius) {
   const a = `around:${radius},${lat.toFixed(6)},${lon.toFixed(6)}`
   return `[out:json][timeout:25];
 (
@@ -33,16 +31,43 @@ function buildQuery(lat, lon, radius) {
 out geom qt;`
 }
 
-// Ordered by observed reachability from Vercel's network, not by data
-// completeness — a mirror that never connects is worse than a slightly
-// less-complete one that actually answers.
-const MIRRORS = [
-  { url: 'https://overpass.osm.ch/api/interpreter', timeoutMs: 9000 },
-  { url: 'https://overpass.kumi.systems/api/interpreter', timeoutMs: 7000 },
-  { url: 'https://overpass.openstreetmap.fr/api/interpreter', timeoutMs: 5000 },
-  { url: 'https://lz4.overpass-api.de/api/interpreter', timeoutMs: 3500 },
-  { url: 'https://overpass-api.de/api/interpreter', timeoutMs: 3500 },
-]
+function buildPostpassQuery(lat, lon, radius) {
+  const pt = `ST_SetSRID(ST_MakePoint(${lon.toFixed(6)},${lat.toFixed(6)}),4326)`
+  return `
+SELECT osm_id, osm_type, tags, geom FROM postpass_line
+WHERE tags ? 'highway' AND tags->>'highway' ~ '^(${ROAD_CLASSES})$'
+AND ST_DWithin(geom::geography, ${pt}::geography, ${radius})
+UNION ALL
+SELECT osm_id, osm_type, tags, geom FROM postpass_polygon
+WHERE tags ? 'building'
+AND ST_DWithin(geom::geography, ${pt}::geography, ${radius})
+`.trim()
+}
+
+// Convert a GeoJSON FeatureCollection (Postpass's response shape) into the
+// Overpass-style `elements` array the rest of the app's parser expects:
+// { type: 'way', id, tags, geometry: [{lat, lon}, ...] }
+function geoJsonToElements(fc) {
+  if (!fc || !Array.isArray(fc.features)) throw new Error('not a GeoJSON FeatureCollection')
+  const elements = []
+  for (const f of fc.features) {
+    const g = f.geometry
+    const tags = f.properties?.tags || {}
+    const id = f.properties?.osm_id ?? f.id
+    if (!g || id == null) continue
+    const ringToPoints = (ring) => ring.map(([lon, lat]) => ({ lat, lon }))
+    if (g.type === 'LineString') {
+      elements.push({ type: 'way', id, tags, geometry: ringToPoints(g.coordinates) })
+    } else if (g.type === 'Polygon' && g.coordinates[0]) {
+      elements.push({ type: 'way', id, tags, geometry: ringToPoints(g.coordinates[0]) })
+    } else if (g.type === 'MultiPolygon') {
+      g.coordinates.forEach((poly, i) => {
+        if (poly[0]) elements.push({ type: 'way', id: `${id}_${i}`, tags, geometry: ringToPoints(poly[0]) })
+      })
+    }
+  }
+  return elements
+}
 
 const HEADERS = {
   'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
@@ -53,7 +78,40 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms))
 }
 
-async function askMirror(url, query, timeoutMs) {
+async function askPostpass(lat, lon, radius, timeoutMs) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const r = await fetch('https://postpass.geofabrik.de/api/interpreter', {
+      method: 'POST',
+      headers: HEADERS,
+      body: 'data=' + encodeURIComponent(buildPostpassQuery(lat, lon, radius)),
+      signal: controller.signal,
+    })
+    if (r.status === 429) throw new Error('HTTP 429 (rate limited)')
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+    const body = await r.json()
+    const elements = geoJsonToElements(body)
+    return { json: { elements }, mirror: 'postpass.geofabrik.de' }
+  } catch (e) {
+    throw new Error(`postpass.geofabrik.de: ${e.name === 'AbortError' ? 'timeout' : e.message || e}`)
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+// Ordered by observed reachability from Vercel's network in this project's
+// own testing — overpass-api.de / lz4 have consistently failed to even
+// connect, so they're tried last with a short budget.
+const OVERPASS_MIRRORS = [
+  { url: 'https://overpass.osm.ch/api/interpreter', timeoutMs: 8000 },
+  { url: 'https://overpass.kumi.systems/api/interpreter', timeoutMs: 6000 },
+  { url: 'https://overpass.openstreetmap.fr/api/interpreter', timeoutMs: 4000 },
+  { url: 'https://lz4.overpass-api.de/api/interpreter', timeoutMs: 3000 },
+  { url: 'https://overpass-api.de/api/interpreter', timeoutMs: 3000 },
+]
+
+async function askOverpassMirror(url, query, timeoutMs) {
   const host = new URL(url).host
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
@@ -91,43 +149,52 @@ export default async function handler(req, res) {
     return
   }
 
-  const query = buildQuery(lat, lon, radius)
   const errors = []
-  const emptyResults = [] // mirrors that cleanly responded but found 0 elements
+  const emptyResults = []
 
-  // One pass only — hitting the same mirror set twice in quick succession is
-  // what tends to trigger their rate limits in the first place.
-  for (const { url, timeoutMs } of MIRRORS) {
+  const tryAccept = (result) => {
+    if (result.json.elements.length > 0) {
+      res.setHeader('Cache-Control', 'public, max-age=0, s-maxage=86400, stale-while-revalidate=604800, stale-if-error=2592000')
+      res.status(200).json(result)
+      return true
+    }
+    emptyResults.push(result)
+    return false
+  }
+
+  // 1. Postpass first — a real database, not a rate-limited shared mirror.
+  try {
+    const result = await askPostpass(lat, lon, radius, 9000)
+    if (tryAccept(result)) return
+  } catch (e) {
+    errors.push(e.message)
+  }
+
+  // 2. Fall back to the Overpass mirror pool.
+  const overpassQuery = buildOverpassQuery(lat, lon, radius)
+  for (const { url, timeoutMs } of OVERPASS_MIRRORS) {
     try {
-      const result = await askMirror(url, query, timeoutMs)
-      if (result.json.elements.length > 0) {
-        res.setHeader('Cache-Control', 'public, max-age=0, s-maxage=86400, stale-while-revalidate=604800, stale-if-error=2592000')
-        res.status(200).json(result)
-        return
-      }
-      emptyResults.push(result)
+      const result = await askOverpassMirror(url, overpassQuery, timeoutMs)
+      if (tryAccept(result)) return
     } catch (e) {
       errors.push(e.message)
       await sleep(200)
     }
   }
 
-  // A mirror that cleanly answers "nothing here" is only trustworthy once at
-  // least two independent mirrors agree — a single empty response could just
-  // mean that one mirror's index is behind, not that the area is actually
-  // empty. If fewer than two agree, treat it as inconclusive, not a result.
+  // An empty result is only trusted once at least two independent sources
+  // (Postpass + a mirror, or two mirrors) agree — a single source saying
+  // "nothing here" could mean its index is behind, not that the area is
+  // genuinely empty.
   if (emptyResults.length >= 2) {
     res.setHeader('Cache-Control', 'public, max-age=0, s-maxage=3600, stale-while-revalidate=86400, stale-if-error=2592000')
     res.status(200).json(emptyResults[0])
     return
   }
 
-  // Do not cache outright failures or single-mirror "empty" results — the
-  // next request (from this user clicking "Try again", or anyone else) should
-  // get a fresh attempt rather than being stuck with an inconclusive result.
   res.setHeader('Cache-Control', 'no-store')
   const reason = emptyResults.length === 1
-    ? `Only one mirror (${emptyResults[0].mirror}) responded, with no data — inconclusive rather than confirmed-empty.\n`
+    ? `Only one source (${emptyResults[0].mirror}) responded, with no data — inconclusive rather than confirmed-empty.\n`
     : ''
-  res.status(502).json({ error: reason + 'All Overpass servers failed or gave inconclusive results.\n' + errors.join('\n') })
+  res.status(502).json({ error: reason + 'All data sources failed or gave inconclusive results.\n' + errors.join('\n') })
 }
