@@ -92,13 +92,41 @@ export const useStore = create((set, get) => ({
         if (token !== loadToken) return
         set({ terrain: sampler, terrainStatus: sampler.available ? 'ready' : 'unavailable' })
       })
-    } catch (e) {
+      } catch (e) {
       if (token !== loadToken) return
       set((s) => ({ osm: { ...s.osm, status: 'error', error: String(e.message || e), note: '' } }))
     }
   },
   cancelLoad: () => { loadToken++; set((s) => ({ osm: { ...s.osm, status: s.osm.data ? 'ready' : 'idle', note: '' } })) },
 
+  // Loads a scene from Overpass JSON the user obtained themselves (e.g. ran
+  // the query on overpass-turbo.eu and pasted/uploaded the result) — a
+  // manual path that works regardless of whether any mirror is reachable
+  // from this app right now.
+  loadOsmFromJson: (json) => {
+    const { location, radius } = get()
+    if (!location) return
+    if (!json || !Array.isArray(json.elements)) {
+      set((s) => ({ osm: { ...s.osm, status: 'error', error: 'That doesn\'t look like Overpass JSON — expected an "elements" array.', note: '' } }))
+      return
+    }
+    const token = ++loadToken // cancel any in-flight network fetch
+    const key = `${location.lat.toFixed(5)},${location.lon.toFixed(5)},${radius}`
+    const changed = get().osm.loadedKey !== key
+    set((s) => ({
+      osm: { status: 'ready', data: json, error: null, note: '', mirror: 'manual import', cached: false, loadedKey: key, origin: { lat: location.lat, lon: location.lon, radius } },
+      sceneId: s.sceneId + 1,
+      view: 'scene',
+      tab: s.tab === 'scene' && changed ? 'vehicles' : s.tab,
+      ...(changed ? { vehicles: [], selectedId: null, markers: [], time: 0, playing: false } : {}),
+    }))
+    set({ terrainStatus: 'loading' })
+    fetchElevation(location.lat, location.lon, radius).then((sampler) => {
+      if (token !== loadToken) return
+      set({ terrain: sampler, terrainStatus: sampler.available ? 'ready' : 'unavailable' })
+    })
+  },
+  
   // ---- scene settings
   env: DEFAULT_ENV,
   setEnv: (p) => set((s) => ({ env: { ...s.env, ...p } })),

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { MapContainer, TileLayer, Marker, Circle, useMapEvents, useMap } from 'react-leaflet'
 import L from 'leaflet'
 import { useStore } from '../store.js'
+import { buildQuery } from '../lib/overpass.js'
 
 const pinIcon = L.divIcon({
   className: '',
@@ -28,6 +29,83 @@ async function geocode(q) {
   const res = await fetch(url, { headers: { Accept: 'application/json' } })
   if (!res.ok) throw new Error('Search failed')
   return res.json()
+}
+
+function ImportPanel({ location, radius }) {
+  const loadOsmFromJson = useStore((s) => s.loadOsmFromJson)
+  const [open, setOpen] = useState(false)
+  const [text, setText] = useState('')
+  const [err, setErr] = useState('')
+  const fileRef = useRef()
+
+  const query = buildQuery(location.lat, location.lon, radius)
+  const turboUrl = `https://overpass-turbo.eu/?Q=${encodeURIComponent(query)}`
+
+  const copyQuery = async () => {
+    try {
+      await navigator.clipboard.writeText(query)
+    } catch {
+      setErr('Could not copy automatically — select and copy the query text below instead.')
+    }
+  }
+
+  const load = (raw) => {
+    setErr('')
+    try {
+      const json = JSON.parse(raw)
+      loadOsmFromJson(json)
+    } catch {
+      setErr("Couldn't parse that as JSON. Make sure you pasted/uploaded the raw Overpass response.")
+    }
+  }
+
+  const onFile = (e) => {
+    const f = e.target.files?.[0]
+    if (!f) return
+    const reader = new FileReader()
+    reader.onload = () => load(String(reader.result))
+    reader.readAsText(f)
+  }
+
+  if (!open) {
+    return (
+      <button className="ft-linkbtn" style={{ marginTop: 10 }} onClick={() => setOpen(true)}>
+        Or import OSM data manually
+      </button>
+    )
+  }
+
+  return (
+    <div className="ft-import">
+      <div className="ft-block-title">Import manually</div>
+      <p className="ft-mute" style={{ margin: '4px 0 10px' }}>
+        If the live fetch keeps failing, run the same query yourself on Overpass Turbo (it works from
+        your own browser even when our automatic fetch doesn't) and load the result here. This always
+        works, with no dependency on any mirror being reachable from this app.
+      </p>
+      <ol style={{ margin: '0 0 10px', paddingLeft: 18, fontSize: 13, lineHeight: 1.6 }}>
+        <li>
+          <a href={turboUrl} target="_blank" rel="noreferrer">Open Overpass Turbo with this query pre-filled</a>
+          {' '}(or <button className="ft-linkbtn" style={{ display: 'inline' }} onClick={copyQuery}>copy the query</button> and paste it in yourself)
+        </li>
+        <li>Click <b>Run</b> there, then <b>Export</b> → <b>raw data</b> → <b>download / copy as raw OSM data</b></li>
+        <li>Paste the JSON below, or upload the downloaded file</li>
+      </ol>
+      <textarea
+        className="ft-importbox"
+        rows={5}
+        placeholder='Paste the Overpass JSON here (starts with { "version": ...)'
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+      />
+      <div className="ft-import-actions">
+        <button className="ft-cta" onClick={() => load(text)} disabled={!text.trim()}>Load pasted data</button>
+        <button className="ft-linkbtn" onClick={() => fileRef.current?.click()}>or choose a file…</button>
+        <input ref={fileRef} type="file" accept=".json,application/json" style={{ display: 'none' }} onChange={onFile} />
+      </div>
+      {err && <div className="ft-mapdock-error" style={{ marginTop: 8 }}>{err}</div>}
+    </div>
+  )
 }
 
 export default function MapPicker() {
@@ -156,6 +234,7 @@ export default function MapPicker() {
                 <button onClick={() => loadOsm()}>Try again</button>
               </div>
             )}
+            <ImportPanel location={location} radius={radius} />
           </>
         )}
       </div>
