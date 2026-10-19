@@ -4,28 +4,22 @@
 // CDN edge, so once any request for a location succeeds, repeat requests for
 // that same area are served instantly and never touch Overpass again.
 //
-// If the proxy fails for ANY reason, this now always falls back to querying
-// public mirrors directly from the VISITOR'S OWN BROWSER — not just in local
-// dev. This matters because Vercel's shared serverless IP range appears to
-// be blocked/deprioritized across the free OSM mirror ecosystem (consistent
-// with their public April-2026 anti-scraper crackdown, which specifically
-// calls out app-hosting platforms) — our server-side requests get 403/406/
-// timeouts near-universally, while the exact same mirrors answer a normal
-// visitor's browser fine, because that request comes from an ordinary
-// residential/mobile IP, not a flagged datacenter range.
+// If the proxy fails, falls back to querying public mirrors directly from
+// the visitor's own browser (Vercel's server IP is widely blocked by these
+// mirrors; a normal visitor's IP usually isn't). Confirmed dead for browser
+// CORS as of Oct 2026: overpass.private.coffee (unreachable), and
+// overpass-api.de / lz4.overpass-api.de / overpass.kumi.systems /
+// overpass.openstreetmap.fr (no CORS headers at all) — kept out of the list
+// below since retrying them wastes the time budget.
 //
-// The direct-browser request is a plain GET with no custom headers — the
-// same shape the official overpass-turbo.eu tool uses from every browser on
-// the public internet — because a "simple request" like this never triggers
-// a CORS preflight, which is where most of these mirrors fail cross-origin
-// calls. Adding custom headers here would silently break this path again.
+// A single pass through the surviving mirrors can still come up empty if
+// they're all transiently busy — the same reason a human has to hit "run"
+// more than once on overpass-turbo sometimes. So this does up to 3 full
+// passes with a short pause between them before giving up.
 
 export const MIRRORS = [
-  'https://overpass-api.de/api/interpreter',
   'https://overpass.osm.ch/api/interpreter',
-  'https://overpass.kumi.systems/api/interpreter',
-  'https://overpass.openstreetmap.fr/api/interpreter',
-  'https://lz4.overpass-api.de/api/interpreter',
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
 ]
 
 const ROAD_CLASSES =
@@ -65,9 +59,6 @@ async function tryProxy(lat, lon, radius, timeoutMs, outerSignal) {
   }
 }
 
-// Plain GET, no custom headers — a "simple request" that skips CORS
-// preflight entirely. This is deliberately as close to what a browser
-// typing the URL directly would send as possible.
 async function tryMirror(url, query, timeoutMs, outerSignal) {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(new Error('timeout')), timeoutMs)
@@ -87,14 +78,24 @@ async function tryMirror(url, query, timeoutMs, outerSignal) {
   }
 }
 
-/**
- * Fetch roads + buildings around a point.
- * Tries the serverless proxy first (instant + cached once any location has
- * succeeded once). On ANY proxy failure, falls back to querying mirrors
- * directly from this browser — on Vercel this is not a last resort, it is
- * often the ONLY path that actually works, since the proxy's own server-side
- * IP is frequently blocked by these same mirrors.
- */
+async function tryAllMirrorsOnce(query, timeoutMs, signal, onStatus) {
+  const start = Math.floor(Math.random() * MIRRORS.length)
+  const errors = []
+  for (let i = 0; i < MIRRORS.length; i++) {
+    const url = MIRRORS[(start + i) % MIRRORS.length]
+    const host = new URL(url).host
+    onStatus?.(`Asking ${host} directly (${i + 1}/${MIRRORS.length})…`)
+    try {
+      const json = await tryMirror(url, query, timeoutMs, signal)
+      return { json, mirror: host }
+    } catch (e) {
+      if (signal?.aborted) throw e
+      errors.push(`${host}: ${e.message || e}`)
+    }
+  }
+  throw new Error(errors.join('\n'))
+}
+
 export async function fetchOsm(lat, lon, radius = 800, { signal, onStatus, timeoutMs = 11000 } = {}) {
   const key = `${lat.toFixed(4)},${lon.toFixed(4)},${radius}`
   if (cache.has(key)) return { json: cache.get(key), mirror: 'cache', cached: true }
@@ -106,24 +107,23 @@ export async function fetchOsm(lat, lon, radius = 800, { signal, onStatus, timeo
     return { json, mirror, cached: fromCache }
   } catch (e) {
     if (signal?.aborted) throw e
-    // fall through to direct-from-browser mirror calls — see module header
+    // fall through to direct-from-browser mirror calls
   }
 
   const query = buildQuery(lat, lon, radius)
-  const start = Math.floor(Math.random() * MIRRORS.length)
-  const errors = []
-  for (let i = 0; i < MIRRORS.length; i++) {
-    const url = MIRRORS[(start + i) % MIRRORS.length]
-    const host = new URL(url).host
-    onStatus?.(`Asking ${host} directly (${i + 1}/${MIRRORS.length})…`)
+  const PASSES = 3
+  let lastErr
+  for (let pass = 1; pass <= PASSES; pass++) {
     try {
-      const json = await tryMirror(url, query, 20000, signal)
+      if (pass > 1) onStatus?.(`First pass came up empty — trying again (${pass}/${PASSES})…`)
+      const { json, mirror } = await tryAllMirrorsOnce(query, 20000, signal, onStatus)
       cache.set(key, json)
-      return { json, mirror: host, cached: false }
+      return { json, mirror, cached: false }
     } catch (e) {
+      lastErr = e
       if (signal?.aborted) throw e
-      errors.push(`${host}: ${e.message || e}`)
+      if (pass < PASSES) await new Promise((r) => setTimeout(r, 4000))
     }
   }
-  throw new Error('All Overpass servers failed.\n' + errors.join('\n'))
+  throw new Error('All Overpass servers failed after multiple attempts.\n' + lastErr.message)
 }
