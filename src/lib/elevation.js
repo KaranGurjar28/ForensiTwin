@@ -2,6 +2,13 @@
 // enhancement: every function here degrades gracefully to "flat" (heightAt
 // returns 0 everywhere) rather than throwing, so a failed or slow elevation
 // fetch never blocks or breaks scene generation.
+//
+// IMPORTANT: the elevation providers (Open-Meteo / Open-Elevation) return
+// absolute elevation above sea level (e.g. ~60m in Gandhinagar). The scene's
+// local coordinate system treats the pinned location as y=0, so every height
+// must be normalized relative to the elevation AT THE PIN, not used raw —
+// otherwise the ground plane floats at the pin's actual sea-level height
+// while everything else (vehicles, trees, markers) stays at the old y=0.
 
 const cache = new Map()
 
@@ -12,6 +19,10 @@ export function makeFlatSampler() {
 }
 
 export function makeSampler(n, radius, heights) {
+  const centerIdx = Math.floor(heights.length / 2) // grid centre = the pinned location
+  const baseline = heights[centerIdx]
+  const rel = heights.map((h) => h - baseline) // normalized: ~0 at the pin
+
   const size = radius * 2
   const heightAt = (x, z) => {
     const u = ((x + radius) / size) * (n - 1)
@@ -20,16 +31,16 @@ export function makeSampler(n, radius, heights) {
     const j0 = Math.max(0, Math.min(n - 2, Math.floor(v)))
     const fu = Math.min(1, Math.max(0, u - i0))
     const fv = Math.min(1, Math.max(0, v - j0))
-    const h00 = heights[j0 * n + i0]
-    const h10 = heights[j0 * n + i0 + 1]
-    const h01 = heights[(j0 + 1) * n + i0]
-    const h11 = heights[(j0 + 1) * n + i0 + 1]
+    const h00 = rel[j0 * n + i0]
+    const h10 = rel[j0 * n + i0 + 1]
+    const h01 = rel[(j0 + 1) * n + i0]
+    const h11 = rel[(j0 + 1) * n + i0 + 1]
     const top = h00 * (1 - fu) + h10 * fu
     const bot = h01 * (1 - fu) + h11 * fu
     return top * (1 - fv) + bot * fv
   }
   heightAt.available = true
-  heightAt.baseElevation = heights[Math.floor(heights.length / 2)] // rough centre elevation, for display only
+  heightAt.baseElevation = baseline // absolute elevation at the pin, for display only
   return heightAt
 }
 
