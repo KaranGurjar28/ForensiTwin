@@ -1,21 +1,17 @@
 // api/overpass.js
-// Vercel serverless function that fetches road + building geometry for a
-// location, cached at Vercel's CDN edge (s-maxage + stale-while-revalidate +
-// stale-if-error).
+// Fetches road + building geometry for a location, cached at Vercel's CDN
+// edge (s-maxage + stale-while-revalidate + stale-if-error).
 //
-// Data sources, tried in order:
-//   1. Postpass (postpass.geofabrik.de) — a PostGIS database behind a SQL
-//      query interface, run by Geofabrik. Not part of the free public
-//      Overpass mirror pool, so it isn't subject to the same shared-IP rate
-//      limiting those mirrors apply. Response is GeoJSON, converted below
-//      into the same Overpass-style `elements` shape the rest of this app
-//      already expects, so no other file needs to change.
-//   2. The public Overpass mirror pool, as a fallback — kept because
-//      Postpass is new to this app and unverified under real load; if its
-//      response shape or availability doesn't hold up, the app falls back
-//      to working exactly as it did before this change.
+// IMPORTANT: Vercel's Hobby plan hard-caps function execution at 10 seconds
+// regardless of any `maxDuration` setting in code or vercel.json — that only
+// requests more time, the platform silently clamps it back down. Trying data
+// sources one after another (Postpass, then 5 Overpass mirrors) can take
+// 20-35s in the worst case and gets killed mid-request on any location that
+// isn't already edge-cached. The fix is to query every source IN PARALLEL:
+// the whole function then only takes as long as the slowest individual
+// timeout, not the sum of all of them, which comfortably fits in 10s.
 
-export const config = { maxDuration: 30 }
+export const config = { maxDuration: 10 }
 
 const ROAD_CLASSES =
   'motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|road|' +
@@ -23,7 +19,7 @@ const ROAD_CLASSES =
 
 function buildOverpassQuery(lat, lon, radius) {
   const a = `around:${radius},${lat.toFixed(6)},${lon.toFixed(6)}`
-  return `[out:json][timeout:25];
+  return `[out:json][timeout:8];
 (
   way["highway"~"^(${ROAD_CLASSES})$"](${a});
   way["building"](${a});
@@ -44,9 +40,6 @@ AND ST_DWithin(geom::geography, ${pt}::geography, ${radius})
 `.trim()
 }
 
-// Convert a GeoJSON FeatureCollection (Postpass's response shape) into the
-// Overpass-style `elements` array the rest of the app's parser expects:
-// { type: 'way', id, tags, geometry: [{lat, lon}, ...] }
 function geoJsonToElements(fc) {
   if (!fc || !Array.isArray(fc.features)) throw new Error('not a GeoJSON FeatureCollection')
   const elements = []
@@ -74,10 +67,6 @@ const HEADERS = {
   'User-Agent': 'ForensiTwin/1.0 (forensic collision reconstruction tool; https://forensi-twin.vercel.app)',
 }
 
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms))
-}
-
 async function askPostpass(lat, lon, radius, timeoutMs) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
@@ -100,15 +89,12 @@ async function askPostpass(lat, lon, radius, timeoutMs) {
   }
 }
 
-// Ordered by observed reachability from Vercel's network in this project's
-// own testing — overpass-api.de / lz4 have consistently failed to even
-// connect, so they're tried last with a short budget.
 const OVERPASS_MIRRORS = [
-  { url: 'https://overpass.osm.ch/api/interpreter', timeoutMs: 8000 },
-  { url: 'https://overpass.kumi.systems/api/interpreter', timeoutMs: 6000 },
-  { url: 'https://overpass.openstreetmap.fr/api/interpreter', timeoutMs: 4000 },
-  { url: 'https://lz4.overpass-api.de/api/interpreter', timeoutMs: 3000 },
-  { url: 'https://overpass-api.de/api/interpreter', timeoutMs: 3000 },
+  'https://overpass.osm.ch/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass.openstreetmap.fr/api/interpreter',
+  'https://lz4.overpass-api.de/api/interpreter',
+  'https://overpass-api.de/api/interpreter',
 ]
 
 async function askOverpassMirror(url, query, timeoutMs) {
@@ -149,43 +135,35 @@ export default async function handler(req, res) {
     return
   }
 
+  // 8s per source, ALL fired at once — the function's total time is bounded
+  // by this single budget, not by the number of sources tried.
+  const BUDGET_MS = 8000
+  const overpassQuery = buildOverpassQuery(lat, lon, radius)
+  const attempts = [
+    askPostpass(lat, lon, radius, BUDGET_MS),
+    ...OVERPASS_MIRRORS.map((url) => askOverpassMirror(url, overpassQuery, BUDGET_MS)),
+  ]
+
+  const settled = await Promise.allSettled(attempts)
+
   const errors = []
   const emptyResults = []
-
-  const tryAccept = (result) => {
-    if (result.json.elements.length > 0) {
+  for (const s of settled) {
+    if (s.status === 'rejected') {
+      errors.push(s.reason?.message || String(s.reason))
+      continue
+    }
+    if (s.value.json.elements.length > 0) {
       res.setHeader('Cache-Control', 'public, max-age=0, s-maxage=86400, stale-while-revalidate=604800, stale-if-error=2592000')
-      res.status(200).json(result)
-      return true
+      res.status(200).json(s.value)
+      return
     }
-    emptyResults.push(result)
-    return false
-  }
-
-  // 1. Postpass first — a real database, not a rate-limited shared mirror.
-  try {
-    const result = await askPostpass(lat, lon, radius, 9000)
-    if (tryAccept(result)) return
-  } catch (e) {
-    errors.push(e.message)
-  }
-
-  // 2. Fall back to the Overpass mirror pool.
-  const overpassQuery = buildOverpassQuery(lat, lon, radius)
-  for (const { url, timeoutMs } of OVERPASS_MIRRORS) {
-    try {
-      const result = await askOverpassMirror(url, overpassQuery, timeoutMs)
-      if (tryAccept(result)) return
-    } catch (e) {
-      errors.push(e.message)
-      await sleep(200)
-    }
+    emptyResults.push(s.value)
   }
 
   // An empty result is only trusted once at least two independent sources
-  // (Postpass + a mirror, or two mirrors) agree — a single source saying
-  // "nothing here" could mean its index is behind, not that the area is
-  // genuinely empty.
+  // agree — one source saying "nothing here" could just mean its index is
+  // behind, not that the area is genuinely empty.
   if (emptyResults.length >= 2) {
     res.setHeader('Cache-Control', 'public, max-age=0, s-maxage=3600, stale-while-revalidate=86400, stale-if-error=2592000')
     res.status(200).json(emptyResults[0])
