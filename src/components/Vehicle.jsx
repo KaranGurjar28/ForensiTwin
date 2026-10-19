@@ -121,18 +121,17 @@ export default function Vehicle({ v }) {
   const lastT = useRef(0)
 
   // playback: drive the pose imperatively so React does not re-render every frame
-  useFrame(() => {
+   useFrame(() => {
     const g = groupRef.current
     if (!g) return
-    const t = useStore.getState().time
-    if (t !== 0 || lastT.current !== 0) {
-      const p = t === 0 ? { x: v.x, z: v.z, bearing: v.heading } : poseAt(v, t)
-      g.position.set(p.x, 0, p.z)
-      g.rotation.set(0, bearingToRotY(p.bearing), 0)
-    }
+    const st = useStore.getState()
+    const t = st.time
+    const p = t === 0 ? { x: v.x, z: v.z, bearing: v.heading } : poseAt(v, t)
+    const y = st.heightAt(p.x, p.z)
+    g.position.set(p.x, y, p.z)
+    g.rotation.set(0, bearingToRotY(p.bearing), 0)
     lastT.current = t
   })
-
   const onChange = () => {
     const g = groupRef.current
     if (!g) return

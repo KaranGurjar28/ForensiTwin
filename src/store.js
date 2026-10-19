@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { fetchOsm } from './lib/overpass.js'
+import { fetchElevation, makeFlatSampler, gradeAt } from './lib/elevation.js'
 import { CATALOG, speedFor } from './lib/catalog.js'
 import { wrap360 } from './lib/geo.js'
 
@@ -10,11 +11,12 @@ export const DEFAULT_ENV = {
   hour: 14.5, weather: 'clear', visibility: 600, greenery: 0.6,
 }
 export const DEFAULT_LAYERS = {
-  buildings: true, trees: true, grid: true, labels: true, paths: true, skids: true,
+  buildings: true, trees: true, grid: true, labels: true, paths: true, skids: true, terrain: true,
 }
 
 export const MARKER_KINDS = {
-  debris: 'Debris', gouge: 'Gouge mark', yaw: 'Yaw mark', rest: 'Rest position', witness: 'Witness', other: 'Other',
+  debris: 'Debris', gouge: 'Gouge mark', yaw: 'Yaw mark', rest: 'Rest position',
+  witness: 'Witness', glass: 'Broken glass', fluid: 'Fluid leak', photo: 'Photo point', other: 'Other',
 }
 
 export function makeVehicle(type, index = 0, over = {}) {
@@ -56,6 +58,13 @@ export const useStore = create((set, get) => ({
   osm: { status: 'idle', data: null, error: null, note: '', loadedKey: null, origin: null },
   worldStats: null,
   sceneId: 0,
+
+  // ---- terrain (elevation sampler; not persisted, not serialized)
+  terrain: makeFlatSampler(),
+  terrainStatus: 'idle', // idle | loading | ready | unavailable
+  heightAt: (x, z) => get().terrain(x, z),
+  gradeAt: (x, z, bearing) => gradeAt(get().terrain, x, z, bearing),
+
   loadOsm: async ({ preserve = false } = {}) => {
     const { location, radius } = get()
     if (!location) return
@@ -75,6 +84,14 @@ export const useStore = create((set, get) => ({
         tab: s.tab === 'scene' && changed ? 'vehicles' : s.tab,
         ...(changed && !preserve ? { vehicles: [], selectedId: null, markers: [], time: 0, playing: false } : {}),
       }))
+
+      // Terrain is best-effort and loads independently of OSM geometry —
+      // a slow or failed elevation fetch never blocks the 3D scene.
+      set({ terrainStatus: 'loading' })
+      fetchElevation(location.lat, location.lon, radius).then((sampler) => {
+        if (token !== loadToken) return
+        set({ terrain: sampler, terrainStatus: sampler.available ? 'ready' : 'unavailable' })
+      })
     } catch (e) {
       if (token !== loadToken) return
       set((s) => ({ osm: { ...s.osm, status: 'error', error: String(e.message || e), note: '' } }))
@@ -119,14 +136,24 @@ export const useStore = create((set, get) => ({
   // ---- evidence markers
   markers: [],
   placing: null, // marker kind currently being placed, or null
-  setPlacing: (placing) => set({ placing }),
+  setPlacing: (placing) => set({ placing, tool: placing ? 'marker' : get().tool === 'marker' ? 'select' : get().tool }),
   addMarker: (kind, x, z) => set((s) => ({
-    markers: [...s.markers, { id: uid(), kind, x, z, n: s.markers.length + 1, note: '' }],
+    markers: [...s.markers, { id: uid(), kind, x, z, n: s.markers.length + 1, note: '', photo: null }],
   })),
   updateMarker: (id, p) => set((s) => ({ markers: s.markers.map((m) => (m.id === id ? { ...m, ...p } : m)) })),
   removeMarker: (id) => set((s) => ({
     markers: s.markers.filter((m) => m.id !== id).map((m, i) => ({ ...m, n: i + 1 })),
   })),
+
+  // ---- measuring ruler
+  tool: 'select', // 'select' | 'marker' | 'ruler'
+  ruler: [], // 0, 1, or 2 {x,z} points
+  setTool: (tool) => set({ tool, placing: tool === 'marker' ? get().placing : null, ruler: [] }),
+  addRulerPoint: (x, z) => set((s) => {
+    if (s.ruler.length >= 2) return { ruler: [{ x, z }] }
+    return { ruler: [...s.ruler, { x, z }] }
+  }),
+  clearRuler: () => set({ ruler: [] }),
 
   // ---- physics settings
   physics: { pair: null, e: 0.25, normalDeg: null, grade: 0, eff: 1 },
@@ -167,7 +194,7 @@ export const useStore = create((set, get) => ({
       env: { ...DEFAULT_ENV, ...d.env }, layers: { ...DEFAULT_LAYERS, ...d.layers },
       caseInfo: d.caseInfo ?? { number: '', investigator: '', notes: '' },
       physics: { pair: null, e: 0.25, normalDeg: null, grade: 0, eff: 1, ...d.physics },
-      selectedId: null, time: 0, playing: false,
+      selectedId: null, time: 0, playing: false, tool: 'select', ruler: [],
     })
     return get().loadOsm({ preserve: true })
   },

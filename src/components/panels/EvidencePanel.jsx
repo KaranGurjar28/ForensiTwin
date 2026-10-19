@@ -6,12 +6,25 @@ export default function EvidencePanel() {
   const setPlacing = useStore((s) => s.setPlacing)
   const updateMarker = useStore((s) => s.updateMarker)
   const removeMarker = useStore((s) => s.removeMarker)
+  const tool = useStore((s) => s.tool)
+  const setTool = useStore((s) => s.setTool)
+  const ruler = useStore((s) => s.ruler)
+  const clearRuler = useStore((s) => s.clearRuler)
 
   return (
     <div className="ft-panel">
       <div className="ft-panel-head"><h3>Evidence markers</h3></div>
-      <p className="ft-hint">Pick a type, then click anywhere on the ground in the scene to drop a marker.</p>
 
+      <div className="ft-block">
+        <div className="ft-block-title">Measure</div>
+        <button className={`ft-secondary ${tool === 'ruler' ? 'ft-addbtn-on' : ''}`} onClick={() => setTool(tool === 'ruler' ? 'select' : 'ruler')} style={{ width: '100%' }}>
+          {tool === 'ruler' ? 'Measuring — click two points' : 'Measure distance'}
+        </button>
+        {ruler.length > 0 && <button className="ft-linkbtn" style={{ marginTop: 8 }} onClick={clearRuler}>Clear points</button>}
+      </div>
+
+      <p className="ft-hint">Pick a type, then click anywhere on the ground in the scene to drop a marker.</p>
+     
       <div className="ft-addgrid">
         {Object.entries(MARKER_KINDS).map(([k, label]) => (
           <button key={k} className={`ft-addbtn ft-addbtn-marker ${placing === k ? 'ft-addbtn-on' : ''}`} onClick={() => setPlacing(placing === k ? null : k)}>

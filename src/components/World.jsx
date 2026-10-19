@@ -10,9 +10,36 @@ function handleGroundClick(e) {
   if (s.placing) {
     e.stopPropagation()
     s.addMarker(s.placing, e.point.x, e.point.z)
+  } else if (s.tool === 'ruler') {
+    e.stopPropagation()
+    s.addRulerPoint(e.point.x, e.point.z)
   } else {
     s.select(null)
   }
+}
+
+function Ground() {
+  const terrain = useStore((s) => s.terrain)
+  const showTerrain = useStore((s) => s.layers.terrain)
+  const geo = useMemo(() => {
+    const g = new THREE.PlaneGeometry(1600, 1600, 80, 80)
+    g.rotateX(-Math.PI / 2)
+    return g
+  }, [])
+  useLayoutEffect(() => {
+    const pos = geo.attributes.position
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i), z = pos.getZ(i)
+      pos.setY(i, showTerrain ? terrain(x, z) : 0)
+    }
+    pos.needsUpdate = true
+    geo.computeVertexNormals()
+  }, [geo, terrain, showTerrain])
+  return (
+    <mesh geometry={geo} receiveShadow onClick={handleGroundClick}>
+      <meshStandardMaterial color="#58664f" roughness={1} />
+    </mesh>
+  )
 }
 
 function Trees({ trees }) {
@@ -113,10 +140,7 @@ export default function World() {
   if (!world) return null
   return (
     <group>
-      <mesh rotation-x={-Math.PI / 2} receiveShadow onClick={handleGroundClick}>
-        <planeGeometry args={[8000, 8000]} />
-        <meshStandardMaterial color="#58664f" roughness={1} />
-      </mesh>
+      <Ground />
       {world.shoulderGeo && (
         <mesh geometry={world.shoulderGeo} receiveShadow onClick={handleGroundClick}>
           <meshStandardMaterial color="#6d7176" roughness={0.95} side={THREE.DoubleSide} polygonOffset polygonOffsetFactor={-1} polygonOffsetUnits={-1} />

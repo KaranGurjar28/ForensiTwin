@@ -13,7 +13,7 @@ const CAMERAS = [
   { id: 'driver', label: "Driver's eye" },
   { id: 'witness', label: 'Chase' },
 ]
-const LAYER_LABELS = { buildings: 'Buildings', trees: 'Trees & houses', grid: '1 m measure grid', labels: 'Vehicle labels', paths: 'Trajectories', skids: 'Skid marks' }
+const LAYER_LABELS = { buildings: 'Buildings', trees: 'Trees & houses', terrain: 'Terrain elevation', grid: '1 m measure grid', labels: 'Vehicle labels', paths: 'Trajectories', skids: 'Skid marks' }
 
 export default function ScenePanel() {
   const env = useStore((s) => s.env)

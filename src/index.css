@@ -328,3 +328,14 @@ input, select, textarea, button { font-family: inherit; }
 .ft-ratepicker button.on { background: #38414b; color: #fff; }
 
 .capitalize { text-transform: capitalize; }
+
+/* ---------------------------------------------------------------- Evidence tents & ruler */
+
+.ft-tent-number {
+  font-family: 'Archivo', sans-serif; font-size: 13px; font-weight: 800; color: #161c22;
+  background: transparent; line-height: 1;
+}
+.ft-marker-label {
+  font-family: 'JetBrains Mono', monospace; font-size: 9.5px; font-weight: 600; color: #fff;
+  background: rgba(22,28,34,0.82); padding: 1px 6px; border-radius: 3px; white-space: nowrap;
+}
