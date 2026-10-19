@@ -1,4 +1,5 @@
-// OpenStreetMap JSON -> merged three.js geometries + collision-aware vegetation.
+// OpenStreetMap JSON -> merged three.js geometries + collision-aware vegetation
+// and street furniture (lights, parked cars, crosswalks/stop signs at junctions).
 // Everything is merged into a handful of draw calls so it stays fast on phones.
 
 import * as THREE from 'three'
@@ -16,6 +17,7 @@ const ROAD = {
 }
 
 const WALLS = ['#c9b8a3', '#b8a99a', '#d6cfc4', '#a89f91', '#cbbfae', '#9aa3a8', '#c2a48a', '#b5b0a6', '#d8c7b0']
+const CAR_COLORS = ['#c43b3b', '#3b6fc4', '#d8d8d8', '#2e2e2e', '#c4a33b', '#5a8f5a', '#8a8f99']
 const LAYER_Y = { shoulder: 0.02, road: 0.04, mark: 0.06 }
 
 // ---------------------------------------------------------------- parsing
@@ -116,6 +118,24 @@ function addRibbon(acc, pts, width, y) {
   }
 }
 
+// crosswalk zebra stripes: short ribbon segments across the road, alternating gaps
+function addCrosswalk(acc, cx, cz, tx, tz, halfSpan, y) {
+  const nx = -tz, nz = tx
+  const stripeLen = 1.1, gap = 0.9, stripeW = halfSpan * 2 - 0.6
+  let s = -halfSpan + stripeLen / 2
+  while (s < halfSpan - stripeLen / 2) {
+    const c0x = cx + nx * s, c0z = cz + nz * s
+    const c1x = cx + nx * (s + stripeLen), c1z = cz + nz * (s + stripeLen)
+    const hw = stripeW / 2
+    const base = acc.pos.length / 3
+    for (const [px, pz] of [[c0x, c0z], [c1x, c1z]]) {
+      acc.pos.push(px - tx * hw, y, pz - tz * hw, px + tx * hw, y, pz + tz * hw)
+    }
+    acc.idx.push(base, base + 1, base + 2, base + 1, base + 3, base + 2)
+    s += stripeLen + gap
+  }
+}
+
 function accToGeometry(acc) {
   if (!acc.pos.length) return null
   const g = new THREE.BufferGeometry()
@@ -183,6 +203,50 @@ function distToPoly(px, pz, poly) {
   return d
 }
 
+// ---------------------------------------------------------------- junction detection
+// Finds where two different road lines pass close to each other, using a spatial
+// hash over subsampled points so it stays roughly O(n) instead of checking every
+// pair of roads against every other. Each match becomes a candidate junction;
+// nearby candidates are merged into one node so a single real intersection
+// doesn't produce a cluster of duplicates.
+
+function findIntersections(lines, { sampleSpacing = 10, mergeRadius = 14, maxCount = 140 } = {}) {
+  const ptGrid = new Grid(12)
+  const samples = []
+  lines.forEach((l, li) => {
+    const step = Math.max(1, Math.round(sampleSpacing / 2))
+    for (let i = step; i < l.pts.length - step; i += step) {
+      const p = l.pts[i]
+      const pa = l.pts[i - 1], pb = l.pts[i + 1]
+      let tx = pb[0] - pa[0], tz = pb[1] - pa[1]
+      const len = Math.hypot(tx, tz) || 1
+      tx /= len; tz /= len
+      const s = { x: p[0], z: p[1], li, hw: l.hw, tx, tz }
+      samples.push(s)
+      ptGrid.add(p[0], p[1], s)
+    }
+  })
+  const resultGrid = new Grid(mergeRadius)
+  const found = []
+  for (const s of samples) {
+    if (found.length >= maxCount) break
+    for (const other of ptGrid.near(s.x, s.z, 1)) {
+      if (other.li === s.li) continue
+      const d = Math.hypot(s.x - other.x, s.z - other.z)
+      if (d < s.hw + other.hw + 2.5) {
+        const mx = (s.x + other.x) / 2, mz = (s.z + other.z) / 2
+        if (!resultGrid.near(mx, mz, 1).some((f) => Math.hypot(f.x - mx, f.z - mz) < mergeRadius)) {
+          const node = { x: mx, z: mz, hw: Math.max(s.hw, other.hw), tx: s.tx, tz: s.tz }
+          found.push(node)
+          resultGrid.add(mx, mz, node)
+        }
+        break
+      }
+    }
+  }
+  return found
+}
+
 // ---------------------------------------------------------------- main builder
 
 export function buildWorld(json, { lat, lon }, { radius = 800 } = {}) {
@@ -193,6 +257,7 @@ export function buildWorld(json, { lat, lon }, { radius = 800 } = {}) {
   const shoulder = { pos: [], idx: [] }
   const asphalt = { pos: [], idx: [] }
   const marks = { pos: [], idx: [] }
+  const crosswalks = { pos: [], idx: [] }
   const lines = []
   const roadGrid = new Grid(20)
   for (const r of roads) {
@@ -205,12 +270,19 @@ export function buildWorld(json, { lat, lon }, { radius = 800 } = {}) {
       // dashed centre line, trimmed near the ends so it does not run through junctions
       for (let s = 3; s + 2 < sm.length - 3; s += 5) addRibbon(marks, sm.slice(s, s + 3), 0.16, LAYER_Y.mark)
     }
-    const line = { pts: sm, hw: r.width / 2, rank: r.rank }
+    const line = { id: r.id, pts: sm, hw: r.width / 2, rank: r.rank }
     lines.push(line)
     for (let i = 0; i < sm.length - 1; i++) {
       const mx = (sm[i][0] + sm[i + 1][0]) / 2, mz = (sm[i][1] + sm[i + 1][1]) / 2
       roadGrid.add(mx, mz, [sm[i][0], sm[i][1], sm[i + 1][0], sm[i + 1][1], line.hw])
     }
+  }
+
+  // --- intersections: crosswalk stripes baked straight into geometry, plus data
+  // for a stop-sign post per junction (rendered as instances in World.jsx)
+  const intersections = findIntersections(lines)
+  for (const n of intersections) {
+    addCrosswalk(crosswalks, n.x, n.z, n.tx, n.tz, n.hw + 1.2, LAYER_Y.mark + 0.002)
   }
 
   // --- buildings
@@ -319,7 +391,57 @@ export function buildWorld(json, { lat, lon }, { radius = 800 } = {}) {
         if (houses.some((h) => Math.hypot(h.x - trees[i][0], h.z - trees[i][1]) < Math.max(h.w, h.d) * 0.75 + 1)) trees.splice(i, 1)
       }
     }
-    return { trees, houses }
+
+    // streetlights: along avenue-ish roads, alternating sides at regular spacing
+    const lights = []
+    for (const l of lines.filter((l) => l.rank >= 2 && l.pts.length > 9)) {
+      let n = 0
+      for (let i = 4; i < l.pts.length - 4; i += 9, n++) {
+        const a = l.pts[i - 1], b = l.pts[i + 1]
+        let tx = b[0] - a[0], tz = b[1] - a[1]
+        const len = Math.hypot(tx, tz) || 1
+        tx /= len; tz /= len
+        const side = n % 2 === 0 ? 1 : -1
+        const off = l.hw + 1.4
+        const x = l.pts[i][0] - tz * off * side
+        const z = l.pts[i][1] + tx * off * side
+        if (!roadClear(x, z, 0.8) || !buildingClear(x, z, 1)) continue
+        lights.push({ x, z, rot: Math.atan2(-tz, tx) })
+      }
+    }
+
+    // parked cars: along minor (residential/service) roads, one side per street, with gaps
+    const cars = []
+    for (const l of lines.filter((l) => l.rank <= 2 && l.pts.length > 7)) {
+      if (rnd() < 0.35) continue // not every street has parking today
+      const side = rnd() < 0.5 ? 1 : -1
+      for (let i = 3; i < l.pts.length - 3; i += 4) {
+        if (rnd() < 0.4) continue
+        const a = l.pts[i - 1], b = l.pts[i + 1]
+        let tx = b[0] - a[0], tz = b[1] - a[1]
+        const len = Math.hypot(tx, tz) || 1
+        tx /= len; tz /= len
+        const off = l.hw + 1.1
+        const x = l.pts[i][0] - tz * off * side
+        const z = l.pts[i][1] + tx * off * side
+        if (!roadClear(x, z, 0.3) || !buildingClear(x, z, 1.5)) continue
+        cars.push({ x, z, rot: Math.atan2(-tz, tx), color: CAR_COLORS[Math.floor(rnd() * CAR_COLORS.length)] })
+      }
+    }
+
+    // junction furniture: a stop-sign post set back from each crosswalk's edge
+    const signs = intersections.slice(0, 90).map((n) => {
+      const nx = -n.tz, nz = n.tx
+      const off = n.hw + 2.2
+      return { x: n.x + nx * off, z: n.z + nz * off, rot: Math.atan2(-n.tz, n.tx) }
+    })
+
+    return {
+      trees, houses,
+      lights: lights.slice(0, 260),
+      cars: cars.slice(0, 220),
+      signs,
+    }
   }
 
   return {
@@ -327,9 +449,10 @@ export function buildWorld(json, { lat, lon }, { radius = 800 } = {}) {
     roadGeo: accToGeometry(asphalt),
     shoulderGeo: accToGeometry(shoulder),
     markGeo: accToGeometry(marks),
+    crosswalkGeo: accToGeometry(crosswalks),
     buildingGeo,
     scatter,
-    stats: { roads: roads.length, buildings: buildings.length },
+    stats: { roads: roads.length, buildings: buildings.length, junctions: intersections.length },
     roadNames: [...new Set(roads.map((r) => r.name).filter(Boolean))].slice(0, 8),
   }
 }
