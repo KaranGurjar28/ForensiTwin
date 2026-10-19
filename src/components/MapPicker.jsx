@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { MapContainer, TileLayer, Marker, Circle, useMapEvents, useMap } from 'react-leaflet'
 import L from 'leaflet'
 import { useStore } from '../store.js'
-import { buildQuery } from '../lib/overpass.js'
+import { buildQuery, offlineFileFor } from '../lib/overpass.js'
 
 const pinIcon = L.divIcon({
   className: '',
@@ -33,6 +33,7 @@ async function geocode(q) {
 
 function ImportPanel({ location, radius }) {
   const loadOsmFromJson = useStore((s) => s.loadOsmFromJson)
+  const osm = useStore((s) => s.osm)
   const [open, setOpen] = useState(false)
   const [text, setText] = useState('')
   const [err, setErr] = useState('')
@@ -40,6 +41,22 @@ function ImportPanel({ location, radius }) {
 
   const query = buildQuery(location.lat, location.lon, radius)
   const turboUrl = `https://overpass-turbo.eu/?Q=${encodeURIComponent(query)}`
+
+  const sameSpotLoaded = osm.status === 'ready' && osm.origin
+    && Math.abs(osm.origin.lat - location.lat) < 0.0001
+    && Math.abs(osm.origin.lon - location.lon) < 0.0001
+    && osm.origin.radius === radius
+
+  const downloadForBundling = () => {
+    const filename = offlineFileFor(location.lat, location.lon, radius)
+    const blob = new Blob([JSON.stringify(osm.data)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    a.click()
+    URL.revokeObjectURL(url)
+  }
 
   const copyQuery = async () => {
     try {
@@ -83,7 +100,7 @@ function ImportPanel({ location, radius }) {
         your own browser even when our automatic fetch doesn't) and load the result here. This always
         works, with no dependency on any mirror being reachable from this app.
       </p>
-      <ol style={{ margin: '0 0 10px', paddingLeft: 18, fontSize: 13, lineHeight: 1.6 }}>
+          <ol style={{ margin: '0 0 10px', paddingLeft: 18, fontSize: 13, lineHeight: 1.6 }}>
         <li>
           <a href={turboUrl} target="_blank" rel="noreferrer">Open Overpass Turbo with this query pre-filled</a>
           {' '}(or <button className="ft-linkbtn" style={{ display: 'inline' }} onClick={copyQuery}>copy the query</button> and paste it in yourself)
@@ -91,6 +108,20 @@ function ImportPanel({ location, radius }) {
         <li>Click <b>Run</b> there, then <b>Export</b> → <b>raw data</b> → <b>download / copy as raw OSM data</b></li>
         <li>Paste the JSON below, or upload the downloaded file</li>
       </ol>
+      {sameSpotLoaded && (
+        <div className="ft-bundle-box">
+          <div className="ft-mute" style={{ marginBottom: 6 }}>
+            This exact spot is already loaded — save it permanently so it never depends on a live fetch again:
+          </div>
+          <button className="ft-linkbtn" onClick={downloadForBundling}>
+            Download <code>{offlineFileFor(location.lat, location.lon, radius)}</code> to bundle it
+          </button>
+          <div className="ft-mute" style={{ marginTop: 6, fontSize: 12 }}>
+            Move the downloaded file into <code>public/offline-osm/</code> in the repo, commit, and push —
+            from then on this spot loads instantly with zero network calls, on Vercel and localhost alike.
+          </div>
+        </div>
+      )}
       <textarea
         className="ft-importbox"
         rows={5}

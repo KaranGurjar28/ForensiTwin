@@ -96,9 +96,35 @@ async function tryAllMirrorsOnce(query, timeoutMs, signal, onStatus) {
   throw new Error(errors.join('\n'))
 }
 
+// Returns the filename used to bundle a location permanently as a static
+// file under public/offline-osm/ — served by Vercel's own CDN, so checking
+// it never touches any third-party server and can never fail the way a live
+// Overpass fetch can.
+export function offlineFileFor(lat, lon, radius) {
+  return `${lat.toFixed(4)}_${lon.toFixed(4)}_${radius}.json`
+}
+
+async function tryOffline(lat, lon, radius) {
+  const res = await fetch(`/offline-osm/${offlineFileFor(lat, lon, radius)}`)
+  if (!res.ok) throw new Error('not bundled')
+  const json = await res.json()
+  if (!Array.isArray(json.elements)) throw new Error('bundled file is malformed')
+  return json
+}
+
 export async function fetchOsm(lat, lon, radius = 800, { signal, onStatus, timeoutMs = 11000 } = {}) {
   const key = `${lat.toFixed(4)},${lon.toFixed(4)},${radius}`
   if (cache.has(key)) return { json: cache.get(key), mirror: 'cache', cached: true }
+
+  // Bundled locations first — a static file, so this can never fail due to
+  // mirror downtime, blocking, or CORS. Always wins if it exists.
+  try {
+    const json = await tryOffline(lat, lon, radius)
+    cache.set(key, json)
+    return { json, mirror: 'bundled (offline)', cached: true }
+  } catch {
+    // not bundled — continue to live fetch below
+  }
 
   onStatus?.('Contacting Overpass…')
   try {
