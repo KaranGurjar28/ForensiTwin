@@ -1,89 +1,129 @@
-// Elevation grid fetching + bilinear-interpolated sampling. Terrain is an
-// enhancement: every function here degrades gracefully to "flat" (heightAt
-// returns 0 everywhere) rather than throwing, so a failed or slow elevation
-// fetch never blocks or breaks scene generation.
+// Overpass API client. Prefers the /api/overpass serverless proxy, which is
+// cached at Vercel's CDN edge — once any request for a location succeeds,
+// repeat requests for that same area are served instantly from cache and
+// never touch Overpass again, which is what makes this reliable long-term
+// (the free public mirrors rate-limit shared cloud IPs unpredictably, so
+// no retry strategy alone can guarantee a mirror answers on every click).
 //
-// Two real-world failure modes have been observed and are guarded against:
-//  1. Providers can return null/non-finite values for some grid points
-//     (ocean, missing tiles). Left unguarded, this produces NaN across the
-//     whole interpolated surface, which can corrupt rendering app-wide.
-//  2. Some locations have genuinely large local relief (riverbanks, cliffs)
-//     that, combined with a camera whose start position doesn't account for
-//     terrain height, can place the camera far from the visible ground.
-// Both are handled by sanitizing non-finite values to the baseline (flat)
-// and clamping relief to a safe visual range.
+// Falls back to calling public mirrors directly from the browser ONLY when
+// the proxy route itself doesn't exist (plain `vite dev` without `vercel dev`,
+// which doesn't serve /api at all). If the proxy DOES exist and responds with
+// a real failure (its own 502, after trying 6 sources server-side), there is
+// no point re-trying those same sources from the browser — most of them
+// (e.g. kumi.systems, lz4.overpass-api.de) don't send CORS headers to
+// browser-origin requests at all, so that retry is guaranteed to fail and
+// just delays the user from seeing the real error.
+
+export const MIRRORS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://lz4.overpass-api.de/api/interpreter',
+  'https://overpass.osm.ch/api/interpreter',
+  'https://overpass.openstreetmap.fr/api/interpreter',
+]
+
+const ROAD_CLASSES =
+  'motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|road|' +
+  'motorway_link|trunk_link|primary_link|secondary_link|tertiary_link'
 
 const cache = new Map()
-const MAX_RELIEF_M = 12 // clamp: terrain drape never moves more than this far from the pin's own elevation
 
-export function makeFlatSampler() {
-  const heightAt = () => 0
-  heightAt.available = false
-  return heightAt
+export function buildQuery(lat, lon, radius) {
+  const a = `around:${radius},${lat.toFixed(6)},${lon.toFixed(6)}`
+  return `[out:json][timeout:25];
+(
+  way["highway"~"^(${ROAD_CLASSES})$"](${a});
+  way["building"](${a});
+);
+out geom qt;`
 }
 
-export function makeSampler(n, radius, rawHeights) {
-  const finite = rawHeights.filter((h) => Number.isFinite(h))
-  if (finite.length === 0) return makeFlatSampler() // nothing usable at all
-
-  const centerIdx = Math.floor(rawHeights.length / 2)
-  const baseline = Number.isFinite(rawHeights[centerIdx])
-    ? rawHeights[centerIdx]
-    : finite[Math.floor(finite.length / 2)] // fall back to the median-ish finite value
-
-  const clamp = (v) => Math.max(-MAX_RELIEF_M, Math.min(MAX_RELIEF_M, v))
-  const rel = rawHeights.map((h) => (Number.isFinite(h) ? clamp(h - baseline) : 0))
-
-  const size = radius * 2
-  const heightAt = (x, z) => {
-    const u = ((x + radius) / size) * (n - 1)
-    const v = ((z + radius) / size) * (n - 1)
-    const i0 = Math.max(0, Math.min(n - 2, Math.floor(u)))
-    const j0 = Math.max(0, Math.min(n - 2, Math.floor(v)))
-    const fu = Math.min(1, Math.max(0, u - i0))
-    const fv = Math.min(1, Math.max(0, v - j0))
-    const h00 = rel[j0 * n + i0]
-    const h10 = rel[j0 * n + i0 + 1]
-    const h01 = rel[(j0 + 1) * n + i0]
-    const h11 = rel[(j0 + 1) * n + i0 + 1]
-    const top = h00 * (1 - fu) + h10 * fu
-    const bot = h01 * (1 - fu) + h11 * fu
-    const result = top * (1 - fv) + bot * fv
-    return Number.isFinite(result) ? result : 0
-  }
-  heightAt.available = true
-  heightAt.baseElevation = baseline
-  return heightAt
-}
-
-/** percent grade in the direction of `bearingDeg`, sampled a few metres either side of (x,z) */
-export function gradeAt(heightAt, x, z, bearingDeg) {
-  if (!heightAt.available) return 0
-  const DEG = Math.PI / 180
-  const dx = Math.sin(bearingDeg * DEG)
-  const dz = -Math.cos(bearingDeg * DEG)
-  const d = 3
-  const h1 = heightAt(x - dx * d, z - dz * d)
-  const h2 = heightAt(x + dx * d, z + dz * d)
-  const g = ((h2 - h1) / (2 * d)) * 100
-  return Number.isFinite(g) ? g : 0
-}
-
-export async function fetchElevation(lat, lon, radius, { signal } = {}) {
-  const key = `${lat.toFixed(4)},${lon.toFixed(4)},${radius}`
-  if (cache.has(key)) return cache.get(key)
+async function tryProxy(lat, lon, radius, timeoutMs, outerSignal) {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(new Error('timeout')), timeoutMs)
+  const onAbort = () => ctrl.abort(outerSignal.reason)
+  outerSignal?.addEventListener('abort', onAbort)
   try {
-    const res = await fetch(`/api/elevation?lat=${lat}&lon=${lon}&radius=${radius}`, { signal })
+    const url = `/api/overpass?lat=${lat}&lon=${lon}&radius=${radius}`
+    const res = await fetch(url, { method: 'GET', signal: ctrl.signal })
     const ct = res.headers.get('content-type') || ''
-    if (!ct.includes('application/json')) throw new Error('proxy unavailable')
+    if (!ct.includes('application/json')) {
+      // No /api route served at all — this is plain `vite dev` without the
+      // serverless function. Direct-mirror fallback is worth trying here.
+      const e = new Error('proxy route not served (local dev without /api)')
+      e.routeMissing = true
+      throw e
+    }
     const body = await res.json()
-    if (!res.ok || !Array.isArray(body.heights)) throw new Error(body?.error || 'bad response')
-    const sampler = makeSampler(body.n, body.radius, body.heights)
-    cache.set(key, sampler)
-    return sampler
-  } catch {
-    const flat = makeFlatSampler()
-    cache.set(key, flat)
-    return flat
+    if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`)
+    if (!Array.isArray(body.json?.elements)) throw new Error('unexpected response')
+    return { json: body.json, mirror: body.mirror || 'proxy', fromCache: res.headers.get('x-vercel-cache') === 'HIT' }
+  } finally {
+    clearTimeout(timer)
+    outerSignal?.removeEventListener('abort', onAbort)
   }
+}
+
+async function tryMirror(url, query, timeoutMs, outerSignal) {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(new Error('timeout')), timeoutMs)
+  const onAbort = () => ctrl.abort(outerSignal.reason)
+  outerSignal?.addEventListener('abort', onAbort)
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+      body: 'data=' + encodeURIComponent(query),
+      signal: ctrl.signal,
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const json = await res.json()
+    if (!Array.isArray(json.elements)) throw new Error('unexpected response')
+    if (json.elements.length === 0 && json.remark) throw new Error(json.remark)
+    return json
+  } finally {
+    clearTimeout(timer)
+    outerSignal?.removeEventListener('abort', onAbort)
+  }
+}
+
+/**
+ * Fetch roads + buildings around a point.
+ * Tries the serverless proxy first (cached at the edge — see module header).
+ * Only falls back to calling public Overpass mirrors directly from the
+ * browser when the proxy route itself isn't served (local dev). If the
+ * proxy exists and genuinely fails, that failure is surfaced immediately.
+ */
+export async function fetchOsm(lat, lon, radius = 800, { signal, onStatus, timeoutMs = 25000 } = {}) {
+  const key = `${lat.toFixed(4)},${lon.toFixed(4)},${radius}`
+  if (cache.has(key)) return { json: cache.get(key), mirror: 'cache', cached: true }
+
+  onStatus?.('Contacting Overpass…')
+  try {
+    const { json, mirror, fromCache } = await tryProxy(lat, lon, radius, timeoutMs, signal)
+    cache.set(key, json)
+    return { json, mirror, cached: fromCache }
+  } catch (e) {
+    if (signal?.aborted) throw e
+    if (!e.routeMissing) throw e // proxy exists and genuinely failed — don't waste time on CORS-doomed retries
+    // else fall through to direct mirror calls (local dev only)
+  }
+
+  const query = buildQuery(lat, lon, radius)
+  const start = Math.floor(Math.random() * MIRRORS.length)
+  const errors = []
+  for (let i = 0; i < MIRRORS.length; i++) {
+    const url = MIRRORS[(start + i) % MIRRORS.length]
+    const host = new URL(url).host
+    onStatus?.(`Asking ${host} (${i + 1}/${MIRRORS.length})…`)
+    try {
+      const json = await tryMirror(url, query, timeoutMs, signal)
+      cache.set(key, json)
+      return { json, mirror: host, cached: false }
+    } catch (e) {
+      if (signal?.aborted) throw e
+      errors.push(`${host}: ${e.message || e}`)
+    }
+  }
+  throw new Error('All Overpass servers failed.\n' + errors.join('\n'))
 }
