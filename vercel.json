@@ -1,1 +1,7 @@
-{ "functions": { "api/overpass.js": { "maxDuration": 10 } } }
+{
+  "functions": {
+    "api/overpass.js": { "maxDuration": 10 },
+    "api/elevation.js": { "maxDuration": 10 }
+  },
+  "regions": ["fra1"]
+}
