@@ -1,25 +1,32 @@
-// Overpass API client. Prefers the /api/overpass serverless proxy, which is
-// cached at Vercel's CDN edge — once any request for a location succeeds,
-// repeat requests for that same area are served instantly from cache and
-// never touch Overpass again, which is what makes this reliable long-term
-// (the free public mirrors rate-limit shared cloud IPs unpredictably, so
-// no retry strategy alone can guarantee a mirror answers on every click).
+// Overpass API client.
 //
-// Falls back to calling public mirrors directly from the browser ONLY when
-// the proxy route itself doesn't exist (plain `vite dev` without `vercel dev`,
-// which doesn't serve /api at all). If the proxy DOES exist and responds with
-// a real failure (its own 502, after trying 6 sources server-side), there is
-// no point re-trying those same sources from the browser — most of them
-// (e.g. kumi.systems, lz4.overpass-api.de) don't send CORS headers to
-// browser-origin requests at all, so that retry is guaranteed to fail and
-// just delays the user from seeing the real error.
+// Tries the /api/overpass serverless proxy first — it's cached at Vercel's
+// CDN edge, so once any request for a location succeeds, repeat requests for
+// that same area are served instantly and never touch Overpass again.
+//
+// If the proxy fails for ANY reason, this now always falls back to querying
+// public mirrors directly from the VISITOR'S OWN BROWSER — not just in local
+// dev. This matters because Vercel's shared serverless IP range appears to
+// be blocked/deprioritized across the free OSM mirror ecosystem (consistent
+// with their public April-2026 anti-scraper crackdown, which specifically
+// calls out app-hosting platforms) — our server-side requests get 403/406/
+// timeouts near-universally, while the exact same mirrors answer a normal
+// visitor's browser fine, because that request comes from an ordinary
+// residential/mobile IP, not a flagged datacenter range.
+//
+// The direct-browser request is a plain GET with no custom headers — the
+// same shape the official overpass-turbo.eu tool uses from every browser on
+// the public internet — because a "simple request" like this never triggers
+// a CORS preflight, which is where most of these mirrors fail cross-origin
+// calls. Adding custom headers here would silently break this path again.
 
 export const MIRRORS = [
   'https://overpass-api.de/api/interpreter',
-  'https://overpass.kumi.systems/api/interpreter',
-  'https://lz4.overpass-api.de/api/interpreter',
   'https://overpass.osm.ch/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
   'https://overpass.openstreetmap.fr/api/interpreter',
+  'https://lz4.overpass-api.de/api/interpreter',
 ]
 
 const ROAD_CLASSES =
@@ -34,6 +41,7 @@ export function buildQuery(lat, lon, radius) {
 (
   way["highway"~"^(${ROAD_CLASSES})$"](${a});
   way["building"](${a});
+  relation["building"](${a});
 );
 out geom qt;`
 }
@@ -47,11 +55,7 @@ async function tryProxy(lat, lon, radius, timeoutMs, outerSignal) {
     const url = `/api/overpass?lat=${lat}&lon=${lon}&radius=${radius}`
     const res = await fetch(url, { method: 'GET', signal: ctrl.signal })
     const ct = res.headers.get('content-type') || ''
-    if (!ct.includes('application/json')) {
-      const e = new Error('proxy route not served (local dev without /api)')
-      e.routeMissing = true
-      throw e
-    }
+    if (!ct.includes('application/json')) throw new Error('proxy route not served')
     const body = await res.json()
     if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`)
     if (!Array.isArray(body.json?.elements)) throw new Error('unexpected response')
@@ -62,18 +66,17 @@ async function tryProxy(lat, lon, radius, timeoutMs, outerSignal) {
   }
 }
 
+// Plain GET, no custom headers — a "simple request" that skips CORS
+// preflight entirely. This is deliberately as close to what a browser
+// typing the URL directly would send as possible.
 async function tryMirror(url, query, timeoutMs, outerSignal) {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(new Error('timeout')), timeoutMs)
   const onAbort = () => ctrl.abort(outerSignal.reason)
   outerSignal?.addEventListener('abort', onAbort)
   try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
-      body: 'data=' + encodeURIComponent(query),
-      signal: ctrl.signal,
-    })
+    const getUrl = `${url}?data=${encodeURIComponent(query)}`
+    const res = await fetch(getUrl, { method: 'GET', signal: ctrl.signal })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const json = await res.json()
     if (!Array.isArray(json.elements)) throw new Error('unexpected response')
@@ -85,7 +88,15 @@ async function tryMirror(url, query, timeoutMs, outerSignal) {
   }
 }
 
-export async function fetchOsm(lat, lon, radius = 800, { signal, onStatus, timeoutMs = 25000 } = {}) {
+/**
+ * Fetch roads + buildings around a point.
+ * Tries the serverless proxy first (instant + cached once any location has
+ * succeeded once). On ANY proxy failure, falls back to querying mirrors
+ * directly from this browser — on Vercel this is not a last resort, it is
+ * often the ONLY path that actually works, since the proxy's own server-side
+ * IP is frequently blocked by these same mirrors.
+ */
+export async function fetchOsm(lat, lon, radius = 800, { signal, onStatus, timeoutMs = 11000 } = {}) {
   const key = `${lat.toFixed(4)},${lon.toFixed(4)},${radius}`
   if (cache.has(key)) return { json: cache.get(key), mirror: 'cache', cached: true }
 
@@ -96,7 +107,7 @@ export async function fetchOsm(lat, lon, radius = 800, { signal, onStatus, timeo
     return { json, mirror, cached: fromCache }
   } catch (e) {
     if (signal?.aborted) throw e
-    if (!e.routeMissing) throw e
+    // fall through to direct-from-browser mirror calls — see module header
   }
 
   const query = buildQuery(lat, lon, radius)
@@ -105,9 +116,9 @@ export async function fetchOsm(lat, lon, radius = 800, { signal, onStatus, timeo
   for (let i = 0; i < MIRRORS.length; i++) {
     const url = MIRRORS[(start + i) % MIRRORS.length]
     const host = new URL(url).host
-    onStatus?.(`Asking ${host} (${i + 1}/${MIRRORS.length})…`)
+    onStatus?.(`Asking ${host} directly (${i + 1}/${MIRRORS.length})…`)
     try {
-      const json = await tryMirror(url, query, timeoutMs, signal)
+      const json = await tryMirror(url, query, 20000, signal)
       cache.set(key, json)
       return { json, mirror: host, cached: false }
     } catch (e) {
