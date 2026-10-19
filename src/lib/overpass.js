@@ -4,8 +4,15 @@
 // never touch Overpass again, which is what makes this reliable long-term
 // (the free public mirrors rate-limit shared cloud IPs unpredictably, so
 // no retry strategy alone can guarantee a mirror answers on every click).
-// Falls back to calling public mirrors directly from the browser, which is
-// what plain `vite dev` will always do locally since it doesn't serve /api.
+//
+// Falls back to calling public mirrors directly from the browser ONLY when
+// the proxy route itself doesn't exist (plain `vite dev` without `vercel dev`,
+// which doesn't serve /api at all). If the proxy DOES exist and responds with
+// a real failure (its own 502, after trying 6 sources server-side), there is
+// no point re-trying those same sources from the browser — most of them
+// (e.g. kumi.systems, lz4.overpass-api.de) don't send CORS headers to
+// browser-origin requests at all, so that retry is guaranteed to fail and
+// just delays the user from seeing the real error.
 
 export const MIRRORS = [
   'https://overpass-api.de/api/interpreter',
@@ -40,7 +47,11 @@ async function tryProxy(lat, lon, radius, timeoutMs, outerSignal) {
     const url = `/api/overpass?lat=${lat}&lon=${lon}&radius=${radius}`
     const res = await fetch(url, { method: 'GET', signal: ctrl.signal })
     const ct = res.headers.get('content-type') || ''
-    if (!ct.includes('application/json')) throw new Error('proxy unavailable')
+    if (!ct.includes('application/json')) {
+      const e = new Error('proxy route not served (local dev without /api)')
+      e.routeMissing = true
+      throw e
+    }
     const body = await res.json()
     if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`)
     if (!Array.isArray(body.json?.elements)) throw new Error('unexpected response')
@@ -74,12 +85,6 @@ async function tryMirror(url, query, timeoutMs, outerSignal) {
   }
 }
 
-/**
- * Fetch roads + buildings around a point.
- * Tries the serverless proxy first (cached at the edge — see module header),
- * then falls back to calling public Overpass mirrors directly from the
- * browser, rotating through them so load is spread, with a random start.
- */
 export async function fetchOsm(lat, lon, radius = 800, { signal, onStatus, timeoutMs = 25000 } = {}) {
   const key = `${lat.toFixed(4)},${lon.toFixed(4)},${radius}`
   if (cache.has(key)) return { json: cache.get(key), mirror: 'cache', cached: true }
@@ -91,7 +96,7 @@ export async function fetchOsm(lat, lon, radius = 800, { signal, onStatus, timeo
     return { json, mirror, cached: fromCache }
   } catch (e) {
     if (signal?.aborted) throw e
-    // fall through to direct mirror calls
+    if (!e.routeMissing) throw e
   }
 
   const query = buildQuery(lat, lon, radius)
