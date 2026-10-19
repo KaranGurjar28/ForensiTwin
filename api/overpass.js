@@ -1,11 +1,5 @@
 
- // api/overpass.js
-
 export const config = { maxDuration: 10 }
-
-const ROAD_CLASSES =
-  'motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|road|' +
-  'motorway_link|trunk_link|primary_link|secondary_link|tertiary_link'
 
 const PROVIDERS = [
   'https://overpass.private.coffee/api/interpreter',
@@ -14,75 +8,64 @@ const PROVIDERS = [
   'https://overpass.osm.ch/api/interpreter',
 ]
 
-function buildQuery(lat, lon, radius) {
-  const around = `around:${radius},${lat.toFixed(6)},${lon.toFixed(6)}`
+function getBounds(lat, lon, radius) {
+  const dLat = radius / 111320
+  const dLon = radius / (111320 * Math.max(0.15, Math.cos(lat * Math.PI / 180)))
+
+  return [
+    Math.max(-90, lat - dLat),
+    Math.max(-180, lon - dLon),
+    Math.min(90, lat + dLat),
+    Math.min(180, lon + dLon),
+  ].map(n => n.toFixed(6)).join(',')
+}
+
+function makeQuery(lat, lon, radius) {
+  const bounds = getBounds(lat, lon, radius)
+
   return `[out:json][timeout:5];
 (
- way["highway"~"^(${ROAD_CLASSES})$"](${around});
- way["building"](${around});
+  way["highway"](${bounds});
+  way["building"](${bounds});
+  relation["building"](${bounds});
 );
 out geom;`
 }
 
-async function request(url, query, timeoutMs = 2200) {
+async function fetchProvider(url, query, timeoutMs = 1800) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
 
   try {
-    const options = {
+    const response = await fetch(url, {
+      method: 'POST',
       headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
         Accept: 'application/json',
         'User-Agent': 'ForensiTwin/1.0',
       },
+      body: new URLSearchParams({ data: query }).toString(),
       signal: controller.signal,
-    }
-
-    let response = await fetch(url, {
-      ...options,
-      method: 'POST',
-      headers: {
-        ...options.headers,
-        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-      },
-      body: `data=${encodeURIComponent(query)}`,
     })
-
-    if ([405, 406, 415].includes(response.status)) {
-      try {
-        await response.body?.cancel()
-      } catch {
-        // Ignore a closed response body.
-      }
-
-      response = await fetch(
-        `${url}?data=${encodeURIComponent(query)}`,
-        options,
-      )
-    }
 
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`)
     }
 
-    const contentType = response.headers.get('content-type') || ''
-    if (!contentType.toLowerCase().includes('json')) {
-      throw new Error(`Unexpected content type: ${contentType || 'missing'}`)
+    const data = await response.json()
+
+    if (!Array.isArray(data.elements)) {
+      throw new Error('Invalid Overpass response')
     }
 
-    const json = await response.json()
-
-    if (!Array.isArray(json.elements)) {
-      throw new Error('Invalid Overpass response: elements missing')
+    if (data.remark) {
+      throw new Error(data.remark)
     }
 
-    if (json.remark) {
-      throw new Error(`Overpass remark: ${json.remark}`)
-    }
-
-    return json
+    return data
   } catch (error) {
-    if (error?.name === 'AbortError') {
-      throw new Error('Request timed out')
+    if (error.name === 'AbortError') {
+      throw new Error('Provider timeout')
     }
     throw error
   } finally {
@@ -91,23 +74,19 @@ async function request(url, query, timeoutMs = 2200) {
 }
 
 export default async function handler(req, res) {
+  res.setHeader('Cache-Control', 'no-store')
+
   if (req.method !== 'GET') {
     res.setHeader('Allow', 'GET')
-    return res.status(405).json({
-      error: 'Method not allowed. Use GET.',
-    })
+    return res.status(405).json({ error: 'GET requests only' })
   }
 
   const lat = Number(req.query.lat)
   const lon = Number(req.query.lon)
   const requestedRadius = Number.parseInt(req.query.radius, 10)
-
   const radius = Math.min(
     1200,
-    Math.max(
-      100,
-      Number.isFinite(requestedRadius) ? requestedRadius : 800,
-    ),
+    Math.max(100, Number.isFinite(requestedRadius) ? requestedRadius : 800),
   )
 
   if (
@@ -118,60 +97,55 @@ export default async function handler(req, res) {
     lon < -180 ||
     lon > 180
   ) {
-    return res.status(400).json({
-      error: 'Valid latitude and longitude are required.',
-    })
+    return res.status(400).json({ error: 'Invalid latitude or longitude' })
   }
 
-  const query = buildQuery(lat, lon, radius)
+  const query = makeQuery(lat, lon, radius)
   const errors = []
-  let emptyResult = null
 
-  // Try providers sequentially to avoid parallel requests.
   for (const endpoint of PROVIDERS) {
     const host = new URL(endpoint).host
 
     try {
-      const json = await request(endpoint, query)
+      const json = await fetchProvider(endpoint, query)
 
-      if (json.elements.length > 0) {
-        res.setHeader(
-          'Cache-Control',
-          'public, max-age=0, s-maxage=86400, stale-while-revalidate=604800',
-        )
-
-        return res.status(200).json({
-          json,
-          mirror: host,
-        })
+      if (json.elements.length === 0) {
+        errors.push(`${host}: no features returned`)
+        continue
       }
 
-      // An empty response alone is not proof the area has no data.
-      emptyResult ||= {
+      const roads = json.elements.filter(
+        el => el.tags?.highway && Array.isArray(el.geometry),
+      )
+
+      const buildings = json.elements.filter(
+        el =>
+          (el.tags?.building || el.tags?.['building:part']) &&
+          Array.isArray(el.geometry),
+      )
+
+      // Preserve the response structure used by the frontend.
+      res.setHeader(
+        'Cache-Control',
+        'public, max-age=0, s-maxage=86400, stale-while-revalidate=604800',
+      )
+
+      return res.status(200).json({
         json,
         mirror: host,
-      }
+        counts: {
+          total: json.elements.length,
+          roads: roads.length,
+          buildings: buildings.length,
+        },
+      })
     } catch (error) {
-      errors.push(`${host}: ${error?.message || String(error)}`)
+      errors.push(`${host}: ${error.message}`)
     }
   }
 
-  if (emptyResult) {
-    res.setHeader(
-      'Cache-Control',
-      'public, max-age=0, s-maxage=300, stale-while-revalidate=3600',
-    )
-
-    return res.status(200).json(emptyResult)
-  }
-
-  res.setHeader('Cache-Control', 'no-store')
-
   return res.status(502).json({
-    error:
-      'No Overpass provider returned usable road/building data. ' +
-      errors.join(' | '),
-    hint:
-      'Public Overpass services may be unavailable or rate-limiting this deployment. Retry later or configure a dedicated OSM provider.',
+    error: 'No provider returned usable OpenStreetMap features.',
+    details: errors,
   })
 }
