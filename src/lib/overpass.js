@@ -23,7 +23,6 @@
 export const MIRRORS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.osm.ch/api/interpreter',
-  'https://overpass.private.coffee/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
   'https://overpass.openstreetmap.fr/api/interpreter',
   'https://lz4.overpass-api.de/api/interpreter',
