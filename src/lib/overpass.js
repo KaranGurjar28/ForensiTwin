@@ -5,16 +5,14 @@
 // (the free public mirrors rate-limit shared cloud IPs unpredictably, so
 // no retry strategy alone can guarantee a mirror answers on every click).
 //
-// One click now tries the whole batch of server-side sources up to 3 times
-// (with a short backoff) before giving up — these are independent public
-// services, so a source that timed out or 500'd on attempt 1 often answers
-// fine on attempt 2 or 3. This is purely about transient failures; it does
-// NOT retry against sources that explicitly rejected the request (406/403),
-// since those will reject again immediately.
-//
 // Falls back to calling public mirrors directly from the browser ONLY when
 // the proxy route itself doesn't exist (plain `vite dev` without `vercel dev`,
-// which doesn't serve /api at all).
+// which doesn't serve /api at all). If the proxy DOES exist and responds with
+// a real failure (its own 502, after trying 6 sources server-side), there is
+// no point re-trying those same sources from the browser — most of them
+// (e.g. kumi.systems, lz4.overpass-api.de) don't send CORS headers to
+// browser-origin requests at all, so that retry is guaranteed to fail and
+// just delays the user from seeing the real error.
 
 export const MIRRORS = [
   'https://overpass-api.de/api/interpreter',
@@ -64,22 +62,6 @@ async function tryProxy(lat, lon, radius, timeoutMs, outerSignal) {
   }
 }
 
-async function tryProxyWithRetries(lat, lon, radius, timeoutMs, outerSignal, onStatus) {
-  const ATTEMPTS = 3
-  let lastErr
-  for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
-    try {
-      if (attempt > 1) onStatus?.(`Sources were busy — retrying (${attempt}/${ATTEMPTS})…`)
-      return await tryProxy(lat, lon, radius, timeoutMs, outerSignal)
-    } catch (e) {
-      lastErr = e
-      if (outerSignal?.aborted || e.routeMissing) throw e
-      if (attempt < ATTEMPTS) await new Promise((r) => setTimeout(r, 1500 * attempt))
-    }
-  }
-  throw lastErr
-}
-
 async function tryMirror(url, query, timeoutMs, outerSignal) {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(new Error('timeout')), timeoutMs)
@@ -103,13 +85,13 @@ async function tryMirror(url, query, timeoutMs, outerSignal) {
   }
 }
 
-export async function fetchOsm(lat, lon, radius = 800, { signal, onStatus, timeoutMs = 11000 } = {}) {
+export async function fetchOsm(lat, lon, radius = 800, { signal, onStatus, timeoutMs = 25000 } = {}) {
   const key = `${lat.toFixed(4)},${lon.toFixed(4)},${radius}`
   if (cache.has(key)) return { json: cache.get(key), mirror: 'cache', cached: true }
 
   onStatus?.('Contacting Overpass…')
   try {
-    const { json, mirror, fromCache } = await tryProxyWithRetries(lat, lon, radius, timeoutMs, signal, onStatus)
+    const { json, mirror, fromCache } = await tryProxy(lat, lon, radius, timeoutMs, signal)
     cache.set(key, json)
     return { json, mirror, cached: fromCache }
   } catch (e) {
@@ -125,7 +107,7 @@ export async function fetchOsm(lat, lon, radius = 800, { signal, onStatus, timeo
     const host = new URL(url).host
     onStatus?.(`Asking ${host} (${i + 1}/${MIRRORS.length})…`)
     try {
-      const json = await tryMirror(url, query, 25000, signal)
+      const json = await tryMirror(url, query, timeoutMs, signal)
       cache.set(key, json)
       return { json, mirror: host, cached: false }
     } catch (e) {
