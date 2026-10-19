@@ -3,14 +3,18 @@
 // returns 0 everywhere) rather than throwing, so a failed or slow elevation
 // fetch never blocks or breaks scene generation.
 //
-// IMPORTANT: the elevation providers (Open-Meteo / Open-Elevation) return
-// absolute elevation above sea level (e.g. ~60m in Gandhinagar). The scene's
-// local coordinate system treats the pinned location as y=0, so every height
-// must be normalized relative to the elevation AT THE PIN, not used raw —
-// otherwise the ground plane floats at the pin's actual sea-level height
-// while everything else (vehicles, trees, markers) stays at the old y=0.
+// Two real-world failure modes have been observed and are guarded against:
+//  1. Providers can return null/non-finite values for some grid points
+//     (ocean, missing tiles). Left unguarded, this produces NaN across the
+//     whole interpolated surface, which can corrupt rendering app-wide.
+//  2. Some locations have genuinely large local relief (riverbanks, cliffs)
+//     that, combined with a camera whose start position doesn't account for
+//     terrain height, can place the camera far from the visible ground.
+// Both are handled by sanitizing non-finite values to the baseline (flat)
+// and clamping relief to a safe visual range.
 
 const cache = new Map()
+const MAX_RELIEF_M = 12 // clamp: terrain drape never moves more than this far from the pin's own elevation
 
 export function makeFlatSampler() {
   const heightAt = () => 0
@@ -18,10 +22,17 @@ export function makeFlatSampler() {
   return heightAt
 }
 
-export function makeSampler(n, radius, heights) {
-  const centerIdx = Math.floor(heights.length / 2) // grid centre = the pinned location
-  const baseline = heights[centerIdx]
-  const rel = heights.map((h) => h - baseline) // normalized: ~0 at the pin
+export function makeSampler(n, radius, rawHeights) {
+  const finite = rawHeights.filter((h) => Number.isFinite(h))
+  if (finite.length === 0) return makeFlatSampler() // nothing usable at all
+
+  const centerIdx = Math.floor(rawHeights.length / 2)
+  const baseline = Number.isFinite(rawHeights[centerIdx])
+    ? rawHeights[centerIdx]
+    : finite[Math.floor(finite.length / 2)] // fall back to the median-ish finite value
+
+  const clamp = (v) => Math.max(-MAX_RELIEF_M, Math.min(MAX_RELIEF_M, v))
+  const rel = rawHeights.map((h) => (Number.isFinite(h) ? clamp(h - baseline) : 0))
 
   const size = radius * 2
   const heightAt = (x, z) => {
@@ -37,10 +48,11 @@ export function makeSampler(n, radius, heights) {
     const h11 = rel[(j0 + 1) * n + i0 + 1]
     const top = h00 * (1 - fu) + h10 * fu
     const bot = h01 * (1 - fu) + h11 * fu
-    return top * (1 - fv) + bot * fv
+    const result = top * (1 - fv) + bot * fv
+    return Number.isFinite(result) ? result : 0
   }
   heightAt.available = true
-  heightAt.baseElevation = baseline // absolute elevation at the pin, for display only
+  heightAt.baseElevation = baseline
   return heightAt
 }
 
@@ -53,7 +65,8 @@ export function gradeAt(heightAt, x, z, bearingDeg) {
   const d = 3
   const h1 = heightAt(x - dx * d, z - dz * d)
   const h2 = heightAt(x + dx * d, z + dz * d)
-  return ((h2 - h1) / (2 * d)) * 100
+  const g = ((h2 - h1) / (2 * d)) * 100
+  return Number.isFinite(g) ? g : 0
 }
 
 export async function fetchElevation(lat, lon, radius, { signal } = {}) {
@@ -69,7 +82,6 @@ export async function fetchElevation(lat, lon, radius, { signal } = {}) {
     cache.set(key, sampler)
     return sampler
   } catch {
-    // Terrain is best-effort. A flat sampler keeps the rest of the app working.
     const flat = makeFlatSampler()
     cache.set(key, flat)
     return flat
