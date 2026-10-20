@@ -23,7 +23,7 @@ const COLORS = {
 // Paste your watermark image's complete data URL below when available.
 // Example: const WATERMARK_IMAGE = 'data:image/png;base64,...'
 // Keep an empty string until you have the image.
-const WATERMARK_IMAGE = 'models/forensitwin-watermark.png'
+const WATERMARK_IMAGE = 'models/Watermark.png'
 
 const REPORT_TITLE = 'FORENSITWIN - DIGITAL ACCIDENT RECONSTRUCTION'
 const GENERATED_AT = new Date()
