@@ -1,155 +1,216 @@
-// Overpass API client.
-//
-// Tries the /api/overpass serverless proxy first — it's cached at Vercel's
-// CDN edge, so once any request for a location succeeds, repeat requests for
-// that same area are served instantly and never touch Overpass again.
-//
-// If the proxy fails, falls back to querying public mirrors directly from
-// the visitor's own browser (Vercel's server IP is widely blocked by these
-// mirrors; a normal visitor's IP usually isn't). Confirmed dead for browser
-// CORS as of Oct 2026: overpass.private.coffee (unreachable), and
-// overpass-api.de / lz4.overpass-api.de / overpass.kumi.systems /
-// overpass.openstreetmap.fr (no CORS headers at all) — kept out of the list
-// below since retrying them wastes the time budget.
-//
-// A single pass through the surviving mirrors can still come up empty if
-// they're all transiently busy — the same reason a human has to hit "run"
-// more than once on overpass-turbo sometimes. So this does up to 3 full
-// passes with a short pause between them before giving up.
 
-export const MIRRORS = [
-  'https://overpass.osm.ch/api/interpreter',
-  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
-]
+// ForensiTwin — OpenStreetMap data client.
+// Uses the /api/overpass serverless proxy as the live data source.
+// This avoids browser-side CORS failures from public Overpass mirrors.
+
+const cache = new Map();
+
+export const MIRRORS = [];
 
 const ROAD_CLASSES =
-  'motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|road|' +
-  'motorway_link|trunk_link|primary_link|secondary_link|tertiary_link'
-
-const cache = new Map()
+  "motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|road|" +
+  "motorway_link|trunk_link|primary_link|secondary_link|tertiary_link";
 
 export function buildQuery(lat, lon, radius) {
-  const a = `around:${radius},${lat.toFixed(6)},${lon.toFixed(6)}`
+  const around = `around:${radius},${lat.toFixed(6)},${lon.toFixed(6)}`;
+
   return `[out:json][timeout:25];
 (
-  way["highway"~"^(${ROAD_CLASSES})$"](${a});
-  way["building"](${a});
-  relation["building"](${a});
+  way["highway"~"^(${ROAD_CLASSES})$"](${around});
+  way["building"](${around});
+  relation["building"](${around});
 );
-out geom qt;`
+out geom qt;`;
 }
 
-async function tryProxy(lat, lon, radius, timeoutMs, outerSignal) {
-  const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(new Error('timeout')), timeoutMs)
-  const onAbort = () => ctrl.abort(outerSignal.reason)
-  outerSignal?.addEventListener('abort', onAbort)
-  try {
-    const url = `/api/overpass?lat=${lat}&lon=${lon}&radius=${radius}`
-    const res = await fetch(url, { method: 'GET', signal: ctrl.signal })
-    const ct = res.headers.get('content-type') || ''
-    if (!ct.includes('application/json')) throw new Error('proxy route not served')
-    const body = await res.json()
-    if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`)
-    if (!Array.isArray(body.json?.elements)) throw new Error('unexpected response')
-    return { json: body.json, mirror: body.mirror || 'proxy', fromCache: res.headers.get('x-vercel-cache') === 'HIT' }
-  } finally {
-    clearTimeout(timer)
-    outerSignal?.removeEventListener('abort', onAbort)
-  }
-}
-
-async function tryMirror(url, query, timeoutMs, outerSignal) {
-  const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(new Error('timeout')), timeoutMs)
-  const onAbort = () => ctrl.abort(outerSignal.reason)
-  outerSignal?.addEventListener('abort', onAbort)
-  try {
-    const getUrl = `${url}?data=${encodeURIComponent(query)}`
-    const res = await fetch(getUrl, { method: 'GET', signal: ctrl.signal })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    const json = await res.json()
-    if (!Array.isArray(json.elements)) throw new Error('unexpected response')
-    if (json.elements.length === 0 && json.remark) throw new Error(json.remark)
-    return json
-  } finally {
-    clearTimeout(timer)
-    outerSignal?.removeEventListener('abort', onAbort)
-  }
-}
-
-async function tryAllMirrorsOnce(query, timeoutMs, signal, onStatus) {
-  const start = Math.floor(Math.random() * MIRRORS.length)
-  const errors = []
-  for (let i = 0; i < MIRRORS.length; i++) {
-    const url = MIRRORS[(start + i) % MIRRORS.length]
-    const host = new URL(url).host
-    onStatus?.(`Asking ${host} directly (${i + 1}/${MIRRORS.length})…`)
-    try {
-      const json = await tryMirror(url, query, timeoutMs, signal)
-      return { json, mirror: host }
-    } catch (e) {
-      if (signal?.aborted) throw e
-      errors.push(`${host}: ${e.message || e}`)
-    }
-  }
-  throw new Error(errors.join('\n'))
-}
-
-// Returns the filename used to bundle a location permanently as a static
-// file under public/offline-osm/ — served by Vercel's own CDN, so checking
-// it never touches any third-party server and can never fail the way a live
-// Overpass fetch can.
+// Used for optional pre-bundled map data.
 export function offlineFileFor(lat, lon, radius) {
-  return `${lat.toFixed(4)}_${lon.toFixed(4)}_${radius}.json`
+  return `${lat.toFixed(4)}_${lon.toFixed(4)}_${radius}.json`;
 }
 
-async function tryOffline(lat, lon, radius) {
-  const res = await fetch(`/offline-osm/${offlineFileFor(lat, lon, radius)}`)
-  if (!res.ok) throw new Error('not bundled')
-  const json = await res.json()
-  if (!Array.isArray(json.elements)) throw new Error('bundled file is malformed')
-  return json
+async function fetchWithTimeout(url, timeoutMs, signal) {
+  const controller = new AbortController();
+
+  const timer = setTimeout(() => {
+    controller.abort(new Error("Request timed out"));
+  }, timeoutMs);
+
+  const onAbort = () => controller.abort(signal.reason);
+
+  signal?.addEventListener("abort", onAbort);
+
+  try {
+    return await fetch(url, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      signal: controller.signal,
+      cache: "no-store",
+    });
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", onAbort);
+  }
 }
 
-export async function fetchOsm(lat, lon, radius = 800, { signal, onStatus, timeoutMs = 11000 } = {}) {
-  const key = `${lat.toFixed(4)},${lon.toFixed(4)},${radius}`
-  if (cache.has(key)) return { json: cache.get(key), mirror: 'cache', cached: true }
+async function tryOffline(lat, lon, radius, signal) {
+  const path = `/offline-osm/${offlineFileFor(lat, lon, radius)}`;
+  const response = await fetchWithTimeout(path, 5000, signal);
 
-  // Bundled locations first — a static file, so this can never fail due to
-  // mirror downtime, blocking, or CORS. Always wins if it exists.
-  try {
-    const json = await tryOffline(lat, lon, radius)
-    cache.set(key, json)
-    return { json, mirror: 'bundled (offline)', cached: true }
-  } catch {
-    // not bundled — continue to live fetch below
+  if (!response.ok) {
+    throw new Error(`No bundled map data (${response.status})`);
   }
 
-  onStatus?.('Contacting Overpass…')
-  try {
-    const { json, mirror, fromCache } = await tryProxy(lat, lon, radius, timeoutMs, signal)
-    cache.set(key, json)
-    return { json, mirror, cached: fromCache }
-  } catch (e) {
-    if (signal?.aborted) throw e
-    // fall through to direct-from-browser mirror calls
+  const json = await response.json();
+
+  if (!Array.isArray(json.elements)) {
+    throw new Error("Bundled map data has an invalid format");
   }
 
-  const query = buildQuery(lat, lon, radius)
-  const PASSES = 3
-  let lastErr
-  for (let pass = 1; pass <= PASSES; pass++) {
+  if (json.elements.length === 0) {
+    throw new Error("Bundled map data contains no map features");
+  }
+
+  return json;
+}
+
+async function tryProxy(lat, lon, radius, timeoutMs, signal) {
+  const params = new URLSearchParams({
+    lat: String(lat),
+    lon: String(lon),
+    radius: String(radius),
+  });
+
+  const url = `/api/overpass?${params.toString()}`;
+  const response = await fetchWithTimeout(url, timeoutMs, signal);
+
+  const contentType = response.headers.get("content-type") || "";
+
+  if (!contentType.includes("application/json")) {
+    throw new Error(
+      `Overpass proxy returned a non-JSON response (HTTP ${response.status})`
+    );
+  }
+
+  const body = await response.json();
+
+  if (!response.ok) {
+    const details = Array.isArray(body.details)
+      ? body.details.join("\n")
+      : "";
+
+    throw new Error(
+      [body.error || `Overpass proxy failed (HTTP ${response.status})`, details]
+        .filter(Boolean)
+        .join("\n")
+    );
+  }
+
+  if (!Array.isArray(body.json?.elements)) {
+    throw new Error("Overpass proxy response is missing json.elements");
+  }
+
+  if (body.json.elements.length === 0) {
+    throw new Error(
+      "The Overpass proxy returned no map features for this location and radius"
+    );
+  }
+
+  return {
+    json: body.json,
+    mirror: body.mirror || "Overpass proxy",
+    cached: response.headers.get("x-vercel-cache") === "HIT",
+  };
+}
+
+export async function fetchOsm(
+  lat,
+  lon,
+  radius = 800,
+  { signal, onStatus, timeoutMs = 15000 } = {}
+) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    throw new Error("Invalid map coordinates");
+  }
+
+  const key = `${lat.toFixed(4)},${lon.toFixed(4)},${radius}`;
+
+  if (cache.has(key)) {
+    return {
+      json: cache.get(key),
+      mirror: "session cache",
+      cached: true,
+    };
+  }
+
+  if (signal?.aborted) {
+    throw signal.reason || new Error("Map request cancelled");
+  }
+
+  // Try a pre-bundled response first if this exact location exists.
+  try {
+    const json = await tryOffline(lat, lon, radius, signal);
+
+    cache.set(key, json);
+
+    return {
+      json,
+      mirror: "bundled offline data",
+      cached: true,
+    };
+  } catch (error) {
+    if (signal?.aborted) {
+      throw signal.reason || error;
+    }
+    // No bundled file: continue to the live API.
+  }
+
+  let lastError;
+
+  // The proxy already handles multiple Overpass servers.
+  // Retry it once in case the first request hit a temporary outage.
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    if (signal?.aborted) {
+      throw signal.reason || new Error("Map request cancelled");
+    }
+
+    onStatus?.(
+      attempt === 1
+        ? "Requesting map data from the ForensiTwin API…"
+        : "Retrying the ForensiTwin map API…"
+    );
+
     try {
-      if (pass > 1) onStatus?.(`First pass came up empty — trying again (${pass}/${PASSES})…`)
-      const { json, mirror } = await tryAllMirrorsOnce(query, 20000, signal, onStatus)
-      cache.set(key, json)
-      return { json, mirror, cached: false }
-    } catch (e) {
-      lastErr = e
-      if (signal?.aborted) throw e
-      if (pass < PASSES) await new Promise((r) => setTimeout(r, 4000))
+      const result = await tryProxy(
+        lat,
+        lon,
+        radius,
+        timeoutMs,
+        signal
+      );
+
+      cache.set(key, result.json);
+
+      onStatus?.(
+        `Loaded ${result.json.elements.length.toLocaleString()} map features`
+      );
+
+      return result;
+    } catch (error) {
+      lastError = error;
+
+      if (signal?.aborted) {
+        throw signal.reason || error;
+      }
+
+      if (attempt < 2) {
+        await new Promise((resolve) => setTimeout(resolve, 700));
+      }
     }
   }
-  throw new Error('All Overpass servers failed after multiple attempts.\n' + lastErr.message)
+
+  throw new Error(
+    `Unable to load map data through /api/overpass.\n${
+      lastError?.message || "Unknown API error"
+    }`
+  );
 }
