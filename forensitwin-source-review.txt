@@ -1,0 +1,2144 @@
+
+
+
+==========================================================================================
+FILE: src/components/Scene.jsx
+==========================================================================================
+import { Suspense } from 'react'
+import { Canvas } from '@react-three/fiber'
+import * as THREE from 'three'
+import { useStore } from '../store.js'
+import World from './World.jsx'
+import Vehicle from './Vehicle.jsx'
+import Overlays from './Overlays.jsx'
+import Environment from './Environment.jsx'
+import CameraRig from './CameraRig.jsx'
+import Snapshot from './Snapshot.jsx'
+
+export default function Scene() {
+  const vehicles = useStore((s) => s.vehicles)
+  const sceneId = useStore((s) => s.sceneId)
+  const cameraMode = useStore((s) => s.cameraMode)
+
+  return (
+    <Canvas
+      key={sceneId}
+      shadows
+      camera={{ position: [28, 22, 30], fov: 50, near: 0.1, far: 4000 }}
+      gl={{ antialias: true, toneMapping: THREE.ACESFilmicToneMapping, toneMappingExposure: 1.05 }}
+      dpr={[1, 1.75]}
+      onPointerMissed={() => useStore.getState().select(null)}
+    >
+      <Snapshot />
+      <Environment />
+      <Suspense fallback={null}>
+        <World />
+        {vehicles.map((v) => (
+          <Vehicle key={v.id} v={v} />
+        ))}
+      </Suspense>
+      <Overlays />
+      <CameraRig />
+      <group visible={cameraMode !== 'driver'} />
+    </Canvas>
+  )
+}
+
+
+
+==========================================================================================
+FILE: src/components/World.jsx
+==========================================================================================
+import { useEffect, useLayoutEffect, useMemo, useRef } from 'react'
+import * as THREE from 'three'
+import { useStore } from '../store.js'
+import { buildWorld } from '../lib/osmGeometry.js'
+
+const Y = new THREE.Vector3(0, 1, 0)
+
+function handleGroundClick(e) {
+  const s = useStore.getState()
+  if (s.placing) {
+    e.stopPropagation()
+    s.addMarker(s.placing, e.point.x, e.point.z)
+  } else if (s.tool === 'ruler') {
+    e.stopPropagation()
+    s.addRulerPoint(e.point.x, e.point.z)
+  } else {
+    s.select(null)
+  }
+}
+
+function Ground() {
+  const terrain = useStore((s) => s.terrain)
+  const showTerrain = useStore((s) => s.layers.terrain)
+  const geo = useMemo(() => {
+    const g = new THREE.PlaneGeometry(1600, 1600, 80, 80)
+    g.rotateX(-Math.PI / 2)
+    return g
+  }, [])
+  useLayoutEffect(() => {
+    const pos = geo.attributes.position
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i), z = pos.getZ(i)
+      pos.setY(i, showTerrain ? terrain(x, z) : 0)
+    }
+    pos.needsUpdate = true
+    geo.computeVertexNormals()
+  }, [geo, terrain, showTerrain])
+  return (
+    <mesh geometry={geo} receiveShadow onClick={handleGroundClick}>
+      <meshStandardMaterial color="#58664f" roughness={1} />
+    </mesh>
+  )
+}
+
+function Trees({ trees }) {
+  const trunk = useRef()
+  const crown = useRef()
+  const geos = useMemo(() => ({
+    trunk: new THREE.CylinderGeometry(0.12, 0.2, 2.2, 6).translate(0, 1.1, 0),
+    crown: new THREE.IcosahedronGeometry(1.5, 1).translate(0, 3.5, 0),
+  }), [])
+  useLayoutEffect(() => {
+    if (!trees.length || !trunk.current || !crown.current) return
+    const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3(), c = new THREE.Color()
+    trees.forEach((t, i) => {
+      q.setFromAxisAngle(Y, t[3]); s.setScalar(t[2]); p.set(t[0], 0, t[1])
+      m.compose(p, q, s)
+      trunk.current.setMatrixAt(i, m)
+      crown.current.setMatrixAt(i, m)
+      c.setHSL(0.27 + (i % 7) * 0.008, 0.38, 0.2 + (i % 5) * 0.022)
+      crown.current.setColorAt(i, c)
+    })
+    trunk.current.instanceMatrix.needsUpdate = true
+    crown.current.instanceMatrix.needsUpdate = true
+    if (crown.current.instanceColor) crown.current.instanceColor.needsUpdate = true
+  }, [trees])
+  if (!trees.length) return null
+  return (
+    <group key={trees.length}>
+      <instancedMesh ref={trunk} args={[geos.trunk, undefined, trees.length]} castShadow>
+        <meshStandardMaterial color="#5a4331" roughness={1} />
+      </instancedMesh>
+      <instancedMesh ref={crown} args={[geos.crown, undefined, trees.length]} castShadow>
+        <meshStandardMaterial color="#ffffff" roughness={0.95} flatShading />
+      </instancedMesh>
+    </group>
+  )
+}
+
+function Houses({ houses }) {
+  const walls = useRef()
+  const roofs = useRef()
+  const geos = useMemo(() => ({
+    wall: new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0),
+    roof: new THREE.ConeGeometry(0.7071, 1, 4).rotateY(Math.PI / 4).translate(0, 0.5, 0),
+  }), [])
+  useLayoutEffect(() => {
+    if (!houses.length || !walls.current || !roofs.current) return
+    const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3(), c = new THREE.Color()
+    houses.forEach((h, i) => {
+      q.setFromAxisAngle(Y, h.rot)
+      p.set(h.x, 0, h.z); s.set(h.w, h.h, h.d); m.compose(p, q, s)
+      walls.current.setMatrixAt(i, m)
+      walls.current.setColorAt(i, c.set(h.color))
+      p.set(h.x, h.h, h.z); s.set(h.w * 1.08, 1.6 + (i % 3) * 0.3, h.d * 1.08); m.compose(p, q, s)
+      roofs.current.setMatrixAt(i, m)
+      roofs.current.setColorAt(i, c.set(i % 2 ? '#8a4b3a' : '#6d5d54'))
+    })
+    for (const r of [walls, roofs]) {
+      r.current.instanceMatrix.needsUpdate = true
+      if (r.current.instanceColor) r.current.instanceColor.needsUpdate = true
+    }
+  }, [houses])
+  if (!houses.length) return null
+  return (
+    <group key={houses.length}>
+      <instancedMesh ref={walls} args={[geos.wall, undefined, houses.length]} castShadow receiveShadow>
+        <meshStandardMaterial color="#ffffff" roughness={0.9} />
+      </instancedMesh>
+      <instancedMesh ref={roofs} args={[geos.roof, undefined, houses.length]} castShadow>
+        <meshStandardMaterial color="#ffffff" roughness={0.85} />
+      </instancedMesh>
+    </group>
+  )
+}
+
+export default function World() {
+  const osm = useStore((s) => s.osm)
+  const layers = useStore((s) => s.layers)
+  const greenery = useStore((s) => s.env.greenery)
+  const wet = useStore((s) => s.env.weather === 'rain')
+
+  const world = useMemo(
+    () => (osm.data && osm.origin ? buildWorld(osm.data, osm.origin, { radius: osm.origin.radius }) : null),
+    [osm.data, osm.origin],
+  )
+  const scatter = useMemo(() => (world ? world.scatter(greenery) : { trees: [], houses: [] }), [world, greenery])
+
+  useEffect(() => {
+    if (!world) return
+    useStore.setState({ worldStats: { ...world.stats, roadNames: world.roadNames } })
+    return () => {
+      for (const g of [world.roadGeo, world.shoulderGeo, world.markGeo, world.buildingGeo]) g?.dispose()
+    }
+  }, [world])
+  useEffect(() => {
+    useStore.setState((s) => ({ worldStats: s.worldStats && { ...s.worldStats, trees: scatter.trees.length, houses: scatter.houses.length } }))
+  }, [scatter])
+
+  if (!world) return null
+  return (
+    <group>
+      <Ground />
+      {world.shoulderGeo && (
+        <mesh geometry={world.shoulderGeo} receiveShadow onClick={handleGroundClick}>
+          <meshStandardMaterial color="#6d7176" roughness={0.95} side={THREE.DoubleSide} polygonOffset polygonOffsetFactor={-1} polygonOffsetUnits={-1} />
+        </mesh>
+      )}
+      {world.roadGeo && (
+        <mesh geometry={world.roadGeo} receiveShadow onClick={handleGroundClick}>
+          <meshStandardMaterial color={wet ? '#202429' : '#2d3035'} roughness={wet ? 0.35 : 0.95} metalness={wet ? 0.2 : 0} side={THREE.DoubleSide} polygonOffset polygonOffsetFactor={-2} polygonOffsetUnits={-2} />
+        </mesh>
+      )}
+      {world.markGeo && (
+        <mesh geometry={world.markGeo} onClick={handleGroundClick}>
+          <meshStandardMaterial color="#e9e7dd" roughness={0.8} side={THREE.DoubleSide} polygonOffset polygonOffsetFactor={-4} polygonOffsetUnits={-4} />
+        </mesh>
+      )}
+      {layers.buildings && world.buildingGeo && (
+        <mesh geometry={world.buildingGeo} castShadow receiveShadow onClick={handleGroundClick}>
+          <meshStandardMaterial vertexColors roughness={0.9} />
+        </mesh>
+      )}
+      {layers.trees && <Trees trees={scatter.trees} />}
+      {layers.trees && <Houses houses={scatter.houses} />}
+    </group>
+  )
+}
+
+
+
+==========================================================================================
+FILE: src/components/Environment.jsx
+==========================================================================================
+import { useMemo, useRef } from 'react'
+import { useFrame, useThree } from '@react-three/fiber'
+import * as THREE from 'three'
+import { useStore } from '../store.js'
+import { fmtHour } from '../lib/geo.js'
+
+// Physically loose but visually convincing day/night sky driven purely by env.hour.
+function skyColors(hour) {
+  const elev = Math.sin(((hour - 6) / 12) * Math.PI) // -1..1, 0 at 6/18, 1 at noon
+  const stops = [
+    { e: -1, top: '#03040c', bottom: '#0a0e1c', sun: '#1a2036', fog: '#05060d', amb: 0.06, sunI: 0.02 },
+    { e: -0.08, top: '#0e1330', bottom: '#3a2a4a', sun: '#ff8a5b', fog: '#241d33', amb: 0.16, sunI: 0.35 },
+    { e: 0.05, top: '#2a3a6b', bottom: '#ffb27a', sun: '#ffcf8f', fog: '#8a7a72', amb: 0.5, sunI: 1.6 },
+    { e: 0.5, top: '#4f86c9', bottom: '#cfe4f2', sun: '#fff6e0', fog: '#c7d8e3', amb: 0.85, sunI: 2.6 },
+    { e: 1.0, top: '#3f7fd1', bottom: '#e7f1f8', sun: '#ffffff', fog: '#d7e5ee', amb: 1.0, sunI: 3.2 },
+  ]
+  let a = stops[0], b = stops[stops.length - 1]
+  for (let i = 0; i < stops.length - 1; i++) if (elev >= stops[i].e && elev <= stops[i + 1].e) { a = stops[i]; b = stops[i + 1]; break }
+  if (elev < stops[0].e) { a = b = stops[0] }
+  if (elev > stops[stops.length - 1].e) { a = b = stops[stops.length - 1] }
+  const k = b.e === a.e ? 0 : THREE.MathUtils.clamp((elev - a.e) / (b.e - a.e), 0, 1)
+  const c = (k2, p) => new THREE.Color(a[p]).lerp(new THREE.Color(b[p]), k2)
+  return { top: c(k, 'top'), bottom: c(k, 'bottom'), sun: c(k, 'sun'), fog: c(k, 'fog'), amb: THREE.MathUtils.lerp(a.amb, b.amb, k), sunI: THREE.MathUtils.lerp(a.sunI, b.sunI, k), elev }
+}
+
+const WEATHER_FOG = { clear: 1, overcast: 0.55, rain: 0.4, fog: 0.12 }
+
+function Sky({ top, bottom }) {
+  const mat = useRef()
+  const uniforms = useMemo(() => ({ top: { value: new THREE.Color() }, bottom: { value: new THREE.Color() } }), [])
+  useFrame(() => { uniforms.top.value.copy(top); uniforms.bottom.value.copy(bottom) })
+  return (
+    <mesh scale={[1, 1, 1]}>
+      <sphereGeometry args={[1900, 24, 16]} />
+      <shaderMaterial
+        ref={mat}
+        side={THREE.BackSide}
+        uniforms={uniforms}
+        vertexShader={`varying vec3 vPos; void main(){ vPos = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`}
+        fragmentShader={`varying vec3 vPos; uniform vec3 top; uniform vec3 bottom; void main(){ float h = clamp(normalize(vPos).y*0.5+0.5, 0.0, 1.0); gl_FragColor = vec4(mix(bottom, top, pow(h, 0.55)), 1.0); }`}
+      />
+    </mesh>
+  )
+}
+
+function Rain({ count = 2200 }) {
+  const ref = useRef()
+  const positions = useMemo(() => {
+    const a = new Float32Array(count * 3)
+    for (let i = 0; i < count; i++) {
+      a[i * 3] = (Math.random() - 0.5) * 160
+      a[i * 3 + 1] = Math.random() * 60
+      a[i * 3 + 2] = (Math.random() - 0.5) * 160
+    }
+    return a
+  }, [count])
+  useFrame((_, dt) => {
+    const cam = ref.current?.parent
+    const arr = ref.current.geometry.attributes.position.array
+    for (let i = 0; i < count; i++) {
+      arr[i * 3 + 1] -= dt * 42
+      if (arr[i * 3 + 1] < 0) arr[i * 3 + 1] = 60
+    }
+    ref.current.geometry.attributes.position.needsUpdate = true
+  })
+  return (
+    <points ref={ref}>
+      <bufferGeometry>
+        <bufferAttribute attach="attributes-position" args={[positions, 3]} />
+      </bufferGeometry>
+      <pointsMaterial color="#bcd4e6" size={0.09} transparent opacity={0.55} sizeAttenuation />
+    </points>
+  )
+}
+
+export default function Environment() {
+  const env = useStore((s) => s.env)
+  const scene = useThree((s) => s.scene)
+  const sky = useMemo(() => skyColors(env.hour), [env.hour])
+  const fogDensity = useMemo(() => {
+    const base = env.weather === 'fog' ? Math.min(env.visibility, 300) : env.visibility
+    return 2.2 / Math.max(60, base * WEATHER_FOG[env.weather])
+  }, [env.visibility, env.weather])
+  const sunDist = 550
+  const sunAngle = ((env.hour - 6) / 12) * Math.PI
+  const sunPos = [Math.cos(sunAngle) * sunDist * 0.4, Math.max(sky.elev, -0.15) * sunDist, Math.sin(sunAngle * 0.3) * sunDist * 0.6 - sunDist * 0.3]
+
+  return (
+    <>
+      <Sky top={sky.top} bottom={sky.bottom} />
+      <fog attach="fog" args={[sky.fog.getHex(), 1, Math.min(1400, 3.2 / fogDensity)]} />
+      <hemisphereLight args={[sky.top.getHex(), '#3a3f34', 0.55 * sky.amb + 0.12]} />
+      <ambientLight intensity={0.18 * sky.amb + 0.05} />
+      <directionalLight
+        position={sunPos}
+        intensity={sky.sunI * (env.weather === 'overcast' ? 0.5 : env.weather === 'rain' ? 0.4 : env.weather === 'fog' ? 0.3 : 1)}
+        color={sky.sun}
+        castShadow
+        shadow-mapSize={[2048, 2048]}
+        shadow-camera-near={1}
+        shadow-camera-far={1000}
+        shadow-camera-left={-90}
+        shadow-camera-right={90}
+        shadow-camera-top={90}
+        shadow-camera-bottom={-90}
+        shadow-bias={-0.0003}
+      />
+      {env.weather === 'rain' && <Rain />}
+    </>
+  )
+}
+
+export function EnvBadge() {
+  const env = useStore((s) => s.env)
+  return (
+    <div className="ft-envbadge">
+      <span>{fmtHour(env.hour)}</span>
+      <span className="ft-dot" />
+      <span className="capitalize">{env.weather}</span>
+      <span className="ft-dot" />
+      <span>{env.visibility >= 1000 ? `${(env.visibility / 1000).toFixed(1)} km` : `${env.visibility} m`} vis.</span>
+    </div>
+  )
+}
+
+
+
+==========================================================================================
+FILE: src/components/Vehicle.jsx
+==========================================================================================
+import { Component, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useFrame } from '@react-three/fiber'
+import { Html, TransformControls, useGLTF } from '@react-three/drei'
+import * as THREE from 'three'
+import { useStore } from '../store.js'
+import { CATALOG, crushDims } from '../lib/catalog.js'
+import { DEG, bearingToRotY, wrap360, round } from '../lib/geo.js'
+import { poseAt } from '../lib/physics.js'
+import { deformPositions } from '../lib/crush.js'
+import { buildProcedural, flattenGlb, makeMaterials } from '../lib/models.js'
+
+// ---- is a custom .glb present? (HEAD request, cached; dev servers answer html for missing files)
+const glbCache = new Map()
+function useGlbAvailable(url) {
+  const [ok, setOk] = useState(() => (url ? glbCache.get(url) ?? null : false))
+  useEffect(() => {
+    if (!url || glbCache.has(url)) return
+    let dead = false
+    fetch(url, { method: 'HEAD' })
+      .then((r) => {
+        const good = r.ok && !(r.headers.get('content-type') || '').includes('text/html')
+        glbCache.set(url, good)
+        if (!dead) setOk(good)
+      })
+      .catch(() => { glbCache.set(url, false); if (!dead) setOk(false) })
+    return () => { dead = true }
+  }, [url])
+  return ok === true
+}
+
+class Boundary extends Component {
+  state = { failed: false }
+  static getDerivedStateFromError() { return { failed: true } }
+  render() { return this.state.failed ? this.props.fallback : this.props.children }
+}
+
+// ---- meshes whose vertices are deformed by the crush model
+function Crushable({ parts, spec, crush, offset, mats }) {
+  const dims = useMemo(() => crushDims(spec), [spec])
+  useLayoutEffect(() => {
+    for (const p of parts) {
+      if (!p.deform) continue
+      const pos = p.geo.attributes.position
+      deformPositions(p.orig, pos.array, dims, spec.noCrush ? 0 : crush, offset)
+      pos.needsUpdate = true
+      if (pos.count < 60000) p.geo.computeVertexNormals()
+      p.geo.computeBoundingSphere()
+    }
+  }, [parts, dims, crush, offset, spec.noCrush])
+  return parts.map((p, i) => (
+    <mesh key={i} geometry={p.geo} material={p.material || mats[p.mat]} castShadow receiveShadow />
+  ))
+}
+
+function GlbCrushable({ spec, crush, offset, mats }) {
+  const { scene } = useGLTF(spec.glb)
+  const parts = useMemo(() => flattenGlb(scene, spec), [scene, spec])
+  return <Crushable parts={parts} spec={spec} crush={crush} offset={offset} mats={mats} />
+}
+
+function VehicleBody({ v, spec }) {
+  const hasGlb = useGlbAvailable(spec.glb)
+  const mats = useMemo(() => makeMaterials(v.color), [v.color])
+  useEffect(() => () => Object.values(mats).forEach((m) => m.dispose()), [mats])
+  const parts = useMemo(() => buildProcedural(v.type), [v.type])
+  useEffect(() => () => parts.forEach((p) => p.geo.dispose()), [parts])
+  const fallback = <Crushable parts={parts} spec={spec} crush={v.crush} offset={v.impactOffset} mats={mats} />
+  if (!hasGlb) return fallback
+  return (
+    <Boundary fallback={fallback}>
+      <Suspense fallback={fallback}>
+        <GlbCrushable spec={spec} crush={v.crush} offset={v.impactOffset} mats={mats} />
+      </Suspense>
+    </Boundary>
+  )
+}
+
+function Headlights({ spec }) {
+  const target = useMemo(() => new THREE.Object3D(), [])
+  const light = useRef()
+  useLayoutEffect(() => { if (light.current) light.current.target = target }, [target])
+  return (
+    <>
+      <spotLight ref={light} position={[0, 0.75, spec.L / 2]} angle={0.45} penumbra={0.6} intensity={1400} distance={65} decay={2} color="#fff3d6" />
+      <primitive object={target} position={[0, 0.2, spec.L / 2 + 20]} />
+    </>
+  )
+}
+
+function SelectionRing({ spec }) {
+  const r = Math.max(spec.L, spec.W * 1.6) * 0.62
+  return (
+    <group>
+      <mesh rotation-x={-Math.PI / 2} position={[0, 0.09, 0]}>
+        <ringGeometry args={[r, r + 0.12, 48]} />
+        <meshBasicMaterial color="#f5c400" transparent opacity={0.95} depthWrite={false} polygonOffset polygonOffsetFactor={-8} polygonOffsetUnits={-8} />
+      </mesh>
+      <mesh position={[0, 0.12, r + 0.55]} rotation-x={Math.PI / 2}>
+        <coneGeometry args={[0.32, 0.7, 3]} />
+        <meshBasicMaterial color="#f5c400" />
+      </mesh>
+    </group>
+  )
+}
+
+const lightsSel = (s) => {
+  const elev = Math.sin(((s.env.hour - 6) / 12) * Math.PI)
+  return elev < 0.08 || (s.env.weather !== 'clear' && s.env.visibility < 350 && s.env.weather !== 'overcast')
+}
+
+export default function Vehicle({ v }) {
+  const spec = CATALOG[v.type]
+  const groupRef = useRef(null)
+  const [obj, setObj] = useState(null)
+  const setRef = useCallback((n) => { groupRef.current = n; setObj(n) }, [])
+  const selected = useStore((s) => s.selectedId === v.id)
+  const editable = useStore((s) => s.time === 0 && !s.playing)
+  const gizmo = useStore((s) => s.gizmo)
+  const lightsOn = useStore(lightsSel)
+  const labels = useStore((s) => s.layers.labels)
+  const lastT = useRef(0)
+
+  // playback: drive the pose imperatively so React does not re-render every frame
+   useFrame(() => {
+    const g = groupRef.current
+    if (!g) return
+    const st = useStore.getState()
+    const t = st.time
+    const p = t === 0 ? { x: v.x, z: v.z, bearing: v.heading } : poseAt(v, t)
+    const y = st.heightAt(p.x, p.z)
+    g.position.set(p.x, y, p.z)
+    g.rotation.set(0, bearingToRotY(p.bearing), 0)
+    lastT.current = t
+  })
+  const onChange = () => {
+    const g = groupRef.current
+    if (!g) return
+    const f = new THREE.Vector3(0, 0, 1).applyQuaternion(g.quaternion)
+    const bearing = wrap360((Math.PI - Math.atan2(f.x, f.z)) / DEG)
+    const patch = { x: round(g.position.x, 2), z: round(g.position.z, 2), heading: round(bearing, 1) }
+    const st = useStore.getState()
+    const cur = st.vehicles.find((q) => q.id === v.id)
+    // keep the post-impact direction glued to the heading until the user sets it on purpose
+    if (cur && Math.abs(wrap360(cur.postDir - cur.heading)) < 0.01) patch.postDir = patch.heading
+    st.updateVehicle(v.id, patch)
+  }
+
+  return (
+    <>
+      <group
+        ref={setRef}
+        position={[v.x, 0, v.z]}
+        rotation={[0, bearingToRotY(v.heading), 0]}
+        onClick={(e) => {
+          const st = useStore.getState()
+          if (st.placing) return
+          e.stopPropagation()
+          st.select(v.id)
+        }}
+      >
+        <VehicleBody v={v} spec={spec} />
+        {lightsOn && spec.kind !== 'person' && <Headlights spec={spec} />}
+        {selected && <SelectionRing spec={spec} />}
+        {labels && (
+          <Html position={[0, spec.H + 0.8, 0]} center style={{ pointerEvents: 'none' }} zIndexRange={[20, 0]}>
+            <div className={`ft-tag ${selected ? 'ft-tag-on' : ''}`}>{v.name}</div>
+          </Html>
+        )}
+      </group>
+      {selected && editable && obj && (
+        <TransformControls
+          object={obj}
+          mode={gizmo}
+          showY={false}
+          showX={gizmo === 'translate'}
+          showZ={gizmo === 'translate'}
+          size={0.9}
+          rotationSnap={null}
+          onObjectChange={onChange}
+        />
+      )}
+    </>
+  )
+}
+
+
+
+==========================================================================================
+FILE: src/components/CameraRig.jsx
+==========================================================================================
+import { useEffect, useMemo, useRef } from 'react'
+import { useFrame, useThree } from '@react-three/fiber'
+import { OrbitControls } from '@react-three/drei'
+import * as THREE from 'three'
+import { useStore } from '../store.js'
+import { CATALOG } from '../lib/catalog.js'
+import { poseAt } from '../lib/physics.js'
+import { eyeFor } from '../lib/models.js'
+
+const tmp = new THREE.Vector3()
+
+export default function CameraRig() {
+  const controls = useRef()
+  const { camera } = useThree()
+  const mode = useStore((s) => s.cameraMode)
+  const prevMode = useRef(mode)
+
+  useEffect(() => {
+    if (mode === 'orbit' && prevMode.current !== 'orbit') {
+      camera.position.set(28, 22, 30)
+      controls.current?.target.set(0, 0, 0)
+    }
+    if (mode === 'top') {
+      camera.position.set(0.01, 130, 0)
+      controls.current?.target.set(0, 0, 0)
+    }
+    prevMode.current = mode
+  }, [mode, camera])
+
+  useFrame(() => {
+    if (mode !== 'driver' && mode !== 'witness') return
+    const st = useStore.getState()
+    const v = st.vehicles.find((v) => v.id === st.selectedId) ?? st.vehicles[0]
+    if (!v) return
+    const spec = CATALOG[v.type]
+    const pose = poseAt(v, st.time)
+    const { pos, dir } = eyeFor(v, pose)
+    if (mode === 'driver') {
+      camera.position.set(...pos)
+      tmp.set(pos[0] + dir[0] * 10, pos[1] - 0.05, pos[2] + dir[2] * 10)
+      camera.lookAt(tmp)
+    } else {
+      const back = 9 + spec.L * 0.6
+      camera.position.set(pose.x - dir[0] * back, spec.H + 5, pose.z - dir[2] * back)
+      camera.lookAt(pose.x, spec.H * 0.4, pose.z)
+    }
+  })
+
+  const orbitLike = mode === 'orbit' || mode === 'top'
+  return orbitLike ? (
+    <OrbitControls
+      ref={controls}
+      makeDefault
+      enableDamping
+      dampingFactor={0.08}
+      minDistance={3}
+      maxDistance={400}
+      maxPolarAngle={mode === 'top' ? 0.1 : Math.PI / 2 - 0.02}
+      mouseButtons={{ LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN }}
+    />
+  ) : null
+}
+
+
+
+==========================================================================================
+FILE: src/components/Overlays.jsx
+==========================================================================================
+import { useLayoutEffect, useRef } from 'react'
+import { useFrame, useThree } from '@react-three/fiber'
+import { Html, Line } from '@react-three/drei'
+import { useStore, MARKER_KINDS } from '../store.js'
+import { CATALOG } from '../lib/catalog.js'
+import { bearingToRotY, bearingToVec } from '../lib/geo.js'
+import { poseAt, postSpeedOf, ms2kmh } from '../lib/physics.js'
+
+const offsetMat = (f) => ({ polygonOffset: true, polygonOffsetFactor: f, polygonOffsetUnits: f })
+
+function Skids() {
+  const vehicles = useStore((s) => s.vehicles)
+  const heightAt = useStore((s) => s.heightAt)
+  const on = useStore((s) => s.layers.skids)
+  if (!on) return null
+  return vehicles
+    .filter((v) => v.skid > 0 && CATALOG[v.type].kind !== 'person')
+    .map((v) => {
+      const spec = CATALOG[v.type]
+      const xs = spec.kind === 'moto' ? [0] : [-spec.W * 0.38, spec.W * 0.38]
+      const y = heightAt(v.x, v.z) + 0.075
+      return (
+        <group key={v.id} position={[v.x, y, v.z]} rotation={[0, bearingToRotY(v.heading), 0]}>
+          {xs.map((x) => (
+            <mesh key={x} position={[x, 0, -v.skid / 2]}>
+              <boxGeometry args={[0.2, 0.012, v.skid]} />
+              <meshBasicMaterial color="#070707" transparent opacity={0.88} {...offsetMat(-6)} />
+            </mesh>
+          ))}
+          <Html position={[0, 0.3, -v.skid]} center style={{ pointerEvents: 'none' }} zIndexRange={[10, 0]}>
+            <div className="ft-chip ft-chip-dark">skid {v.skid.toFixed(1)} m</div>
+          </Html>
+        </group>
+      )
+    })
+}
+
+function Paths() {
+  const vehicles = useStore((s) => s.vehicles)
+  const heightAt = useStore((s) => s.heightAt)
+  const on = useStore((s) => s.layers.paths)
+  if (!on) return null
+  return vehicles.map((v) => {
+    const spec = CATALOG[v.type]
+    const start = poseAt(v, -3)
+    const els = []
+    if (v.speed > 0) {
+      els.push(
+        <Line key="pre" points={[[start.x, heightAt(start.x, start.z) + 0.35, start.z], [v.x, heightAt(v.x, v.z) + 0.35, v.z]]} color="#1d6fb8" lineWidth={2.5} dashed dashSize={1.2} gapSize={0.7} />,
+        <Html key="pre-l" position={[start.x, heightAt(start.x, start.z) + 0.9, start.z]} center style={{ pointerEvents: 'none' }} zIndexRange={[10, 0]}>
+          <div className="ft-chip ft-chip-pre">{v.name} {Math.round(v.speed)} km/h</div>
+        </Html>,
+      )
+    }
+    if (v.postDist > 0) {
+      const [dx, dz] = bearingToVec(v.postDir)
+      const ex = v.x + dx * v.postDist, ez = v.z + dz * v.postDist
+      const ey = heightAt(ex, ez)
+      const rot = bearingToRotY(v.heading)
+      els.push(
+        <Line key="post" points={[[v.x, heightAt(v.x, v.z) + 0.4, v.z], [ex, ey + 0.4, ez]]} color="#d9412b" lineWidth={3} />,
+        <mesh key="arrow" position={[ex, ey + 0.4, ez]} rotation={[Math.PI / 2, 0, -Math.atan2(dx, -dz) + Math.PI]}>
+          <coneGeometry args={[0.35, 0.9, 12]} />
+          <meshBasicMaterial color="#d9412b" />
+        </mesh>,
+        <mesh key="ghost" position={[ex, ey + spec.H / 2, ez]} rotation={[0, rot, 0]}>
+          <boxGeometry args={[spec.W, spec.H, spec.L]} />
+          <meshBasicMaterial color="#d9412b" wireframe transparent opacity={0.4} />
+        </mesh>,
+        <Html key="post-l" position={[ex, ey + spec.H + 0.6, ez]} center style={{ pointerEvents: 'none' }} zIndexRange={[10, 0]}>
+          <div className="ft-chip ft-chip-post">{v.name} rest · {v.postDist.toFixed(1)} m · {Math.round(ms2kmh(postSpeedOf(v)))} km/h</div>
+        </Html>,
+      )
+    }
+    return <group key={v.id}>{els}</group>
+  })
+}
+
+// ---- photorealistic numbered evidence tents (real forensic-photography style:
+// a yellow A-frame placard with a bold black number) + per-kind ground decals.
+
+function EvidenceTent({ n }) {
+  return (
+    <group>
+      {/* A-frame tent body: two angled yellow faces meeting at a ridge */}
+      <mesh position={[0, 0.17, 0.075]} rotation={[0.62, 0, 0]} castShadow>
+        <boxGeometry args={[0.26, 0.015, 0.21]} />
+        <meshStandardMaterial color="#fcd400" roughness={0.55} />
+      </mesh>
+      <mesh position={[0, 0.17, -0.075]} rotation={[-0.62, 0, 0]} castShadow>
+        <boxGeometry args={[0.26, 0.015, 0.21]} />
+        <meshStandardMaterial color="#fcd400" roughness={0.55} />
+      </mesh>
+      {/* end caps (triangular) so it doesn't read as two floating slabs */}
+      {[-0.095, 0.095].map((x) => (
+        <mesh key={x} position={[x, 0.17, 0]}>
+          <coneGeometry args={[0.1, 0.17, 3]} />
+          <meshStandardMaterial color="#e8bf00" roughness={0.6} />
+        </mesh>
+      ))}
+      <Html position={[0, 0.2, 0.001]} center distanceFactor={9} style={{ pointerEvents: 'none' }}>
+        <div className="ft-tent-number">{n}</div>
+      </Html>
+    </group>
+  )
+}
+
+function GroundDecal({ kind }) {
+  if (kind === 'glass') {
+    // scatter of small glinting shards
+    const shards = Array.from({ length: 9 }, (_, i) => {
+      const a = (i / 9) * Math.PI * 2 + (i % 2) * 0.3
+      const r = 0.08 + (i % 4) * 0.05
+      return [Math.cos(a) * r, Math.sin(a) * r, (i * 37) % 360]
+    })
+    return (
+      <group position={[0, 0.012, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        {shards.map(([x, z, rot], i) => (
+          <mesh key={i} position={[x, z, 0]} rotation={[0, 0, (rot * Math.PI) / 180]}>
+            <planeGeometry args={[0.05, 0.08]} />
+            <meshStandardMaterial color="#cfe8e4" transparent opacity={0.75} metalness={0.3} roughness={0.1} side={2} />
+          </mesh>
+        ))}
+      </group>
+    )
+  }
+  if (kind === 'fluid') {
+    return (
+      <mesh position={[0, 0.011, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <circleGeometry args={[0.32, 20]} />
+        <meshStandardMaterial color="#17120d" transparent opacity={0.55} roughness={0.25} />
+      </mesh>
+    )
+  }
+  return null
+}
+
+function Markers() {
+  const markers = useStore((s) => s.markers)
+  const heightAt = useStore((s) => s.heightAt)
+  return markers.map((m) => {
+    const y = heightAt(m.x, m.z)
+    return (
+      <group key={m.id} position={[m.x, y, m.z]}>
+        <GroundDecal kind={m.kind} />
+        <EvidenceTent n={m.n} />
+        <Html position={[0, 0.5, 0]} center style={{ pointerEvents: 'none' }} zIndexRange={[15, 0]}>
+          <div className="ft-marker-label">{MARKER_KINDS[m.kind]}</div>
+        </Html>
+      </group>
+    )
+  })
+}
+
+// ---- click-to-measure ruler
+
+function Ruler() {
+  const tool = useStore((s) => s.tool)
+  const ruler = useStore((s) => s.ruler)
+  const heightAt = useStore((s) => s.heightAt)
+  if (tool !== 'ruler' || ruler.length === 0) return null
+  const pts = ruler.map((p) => [p.x, heightAt(p.x, p.z) + 0.4, p.z])
+  const dist = ruler.length === 2 ? Math.hypot(ruler[1].x - ruler[0].x, ruler[1].z - ruler[0].z) : null
+  const mid = ruler.length === 2
+    ? [(ruler[0].x + ruler[1].x) / 2, Math.max(...pts.map((p) => p[1])) + 0.3, (ruler[0].z + ruler[1].z) / 2]
+    : null
+  return (
+    <group>
+      {pts.map((p, i) => (
+        <mesh key={i} position={p}>
+          <sphereGeometry args={[0.1, 12, 10]} />
+          <meshBasicMaterial color="#f5c400" />
+        </mesh>
+      ))}
+      {pts.length === 2 && <Line points={pts} color="#f5c400" lineWidth={2.5} dashed dashSize={0.3} gapSize={0.18} />}
+      {dist != null && (
+        <Html position={mid} center style={{ pointerEvents: 'none' }} zIndexRange={[20, 0]}>
+          <div className="ft-chip ft-chip-dark">{dist.toFixed(2)} m</div>
+        </Html>
+      )}
+    </group>
+  )
+}
+
+function MeasureGrid() {
+  const on = useStore((s) => s.layers.grid)
+  const fine = useRef()
+  const coarse = useRef()
+  const group = useRef()
+  useLayoutEffect(() => {
+    for (const [r, o] of [[fine, 0.16], [coarse, 0.42]]) {
+      const m = r.current?.material
+      if (m) { m.transparent = true; m.opacity = o; m.depthWrite = false }
+    }
+  }, [on])
+  useFrame(() => {
+    const st = useStore.getState()
+    const vs = st.vehicles
+    let cx = 0, cz = 0
+    if (vs.length) { cx = vs.reduce((a, v) => a + v.x, 0) / vs.length; cz = vs.reduce((a, v) => a + v.z, 0) / vs.length }
+    const gx = Math.round(cx / 10) * 10, gz = Math.round(cz / 10) * 10
+    group.current?.position.set(gx, st.heightAt(gx, gz) + 0.1, gz)
+  })
+  if (!on) return null
+  return (
+    <group ref={group}>
+      <gridHelper ref={fine} args={[100, 100, '#ffffff', '#ffffff']} />
+      <gridHelper ref={coarse} args={[100, 10, '#ffffff', '#ffffff']} position={[0, 0.005, 0]} />
+    </group>
+  )
+}
+
+export default function Overlays() {
+  return (
+    <>
+      <MeasureGrid />
+      <Skids />
+      <Paths />
+      <Markers />
+      <Ruler />
+    </>
+  )
+}
+
+
+
+==========================================================================================
+FILE: src/components/panels/VehiclesPanel.jsx
+==========================================================================================
+import { useStore } from '../../store.js'
+import { CATALOG, VEHICLE_TYPES } from '../../lib/catalog.js'
+import { round } from '../../lib/geo.js'
+
+function NumField({ label, value, onChange, step = 1, min, max, suffix }) {
+  return (
+    <label className="ft-field">
+      <span>{label}</span>
+      <div className="ft-numwrap">
+        <input
+          type="number"
+          value={round(value, 2)}
+          step={step}
+          min={min}
+          max={max}
+          onChange={(e) => onChange(clampNum(+e.target.value, min, max))}
+        />
+        {suffix && <span className="ft-suffix">{suffix}</span>}
+      </div>
+    </label>
+  )
+}
+function clampNum(v, min, max) {
+  if (Number.isNaN(v)) return min ?? 0
+  if (min != null) v = Math.max(min, v)
+  if (max != null) v = Math.min(max, v)
+  return v
+}
+
+function Slider({ label, value, onChange, min = 0, max = 1, step = 0.01, display }) {
+  return (
+    <label className="ft-field">
+      <span>{label}<b>{display ?? value}</b></span>
+      <input type="range" min={min} max={max} step={step} value={value} onChange={(e) => onChange(+e.target.value)} />
+    </label>
+  )
+}
+
+function VehicleCard({ v, selected }) {
+  const spec = CATALOG[v.type]
+  const { select, updateVehicle, changeType, removeVehicle, duplicateVehicle, nudgeHeading } = useStore.getState()
+  return (
+    <div className={`ft-vcard ${selected ? 'ft-vcard-on' : ''}`} onClick={() => select(v.id)}>
+      <div className="ft-vcard-head">
+        <span className="ft-swatch" style={{ background: v.color }} />
+        <input className="ft-vname" value={v.name} onClick={(e) => e.stopPropagation()} onChange={(e) => updateVehicle(v.id, { name: e.target.value })} />
+        <button className="ft-iconbtn" onClick={(e) => { e.stopPropagation(); duplicateVehicle(v.id) }} title="Duplicate">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><rect x="9" y="9" width="12" height="12" rx="1.5" stroke="currentColor" strokeWidth="2" /><path d="M5 15V5a1 1 0 0 1 1-1h10" stroke="currentColor" strokeWidth="2" /></svg>
+        </button>
+        <button className="ft-iconbtn ft-iconbtn-danger" onClick={(e) => { e.stopPropagation(); removeVehicle(v.id) }} title="Remove">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m-8 0 1 12a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1l1-12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>
+        </button>
+      </div>
+
+      {selected && (
+        <div className="ft-vcard-body" onClick={(e) => e.stopPropagation()}>
+          <label className="ft-field">
+            <span>Vehicle type</span>
+            <select value={v.type} onChange={(e) => changeType(v.id, e.target.value)}>
+              {VEHICLE_TYPES.map((t) => (
+                <option key={t} value={t}>{CATALOG[t].label} — {CATALOG[t].sub}</option>
+              ))}
+            </select>
+          </label>
+
+          <div className="ft-row2">
+            <NumField label="X (m, east+)" value={v.x} step={0.1} onChange={(x) => updateVehicle(v.id, { x })} />
+            <NumField label="Z (m, south+)" value={v.z} step={0.1} onChange={(z) => updateVehicle(v.id, { z })} />
+          </div>
+          <div className="ft-row2">
+            <NumField label="Heading" value={v.heading} step={1} min={0} max={360} suffix="°" onChange={(heading) => updateVehicle(v.id, { heading })} />
+            <div className="ft-heading-nudge">
+              <button onClick={() => nudgeHeading(v.id, -15)}>−15°</button>
+              <button onClick={() => nudgeHeading(v.id, 15)}>+15°</button>
+              <button onClick={() => nudgeHeading(v.id, 180)}>180°</button>
+            </div>
+          </div>
+
+          {!spec.noCrush && (
+            <>
+              <Slider label="Frontal crush " value={v.crush} onChange={(crush) => updateVehicle(v.id, { crush })} display={`${Math.round(v.crush * 100)}%`} />
+              <Slider label="Impact offset " value={v.impactOffset} min={-1} max={1} onChange={(impactOffset) => updateVehicle(v.id, { impactOffset })} display={v.impactOffset === 0 ? 'centred' : v.impactOffset > 0 ? `${Math.round(v.impactOffset * 100)}% right` : `${Math.round(-v.impactOffset * 100)}% left`} />
+            </>
+          )}
+
+          <div className="ft-divider" />
+          <div className="ft-subhead">Pre-impact</div>
+          <div className="ft-row2">
+            <NumField label="Speed" value={v.speed} step={1} min={0} max={220} suffix="km/h" onChange={(speed) => updateVehicle(v.id, { speed })} />
+            <NumField label="Skid distance" value={v.skid} step={0.5} min={0} suffix="m" onChange={(skid) => updateVehicle(v.id, { skid })} />
+          </div>
+          <Slider label="Road friction (μ) " value={v.mu} min={0.15} max={1.0} step={0.01} onChange={(mu) => updateVehicle(v.id, { mu })} />
+
+          <div className="ft-divider" />
+          <div className="ft-subhead">Post-impact rest</div>
+          <div className="ft-row2">
+            <NumField label="Rest distance" value={v.postDist} step={0.5} min={0} suffix="m" onChange={(postDist) => updateVehicle(v.id, { postDist })} />
+            <NumField label="Rest direction" value={v.postDir} step={1} min={0} max={360} suffix="°" onChange={(postDir) => updateVehicle(v.id, { postDir })} />
+          </div>
+          <NumField label="Mass" value={v.mass} step={10} min={20} suffix="kg" onChange={(mass) => updateVehicle(v.id, { mass })} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+export default function VehiclesPanel() {
+  const vehicles = useStore((s) => s.vehicles)
+  const selectedId = useStore((s) => s.selectedId)
+  const addVehicle = useStore((s) => s.addVehicle)
+  const gizmo = useStore((s) => s.gizmo)
+  const setGizmo = useStore((s) => s.setGizmo)
+
+  return (
+    <div className="ft-panel">
+      <div className="ft-panel-head">
+        <h3>Vehicles</h3>
+        <span className="ft-count">{vehicles.length}</span>
+      </div>
+
+      {vehicles.length > 0 && (
+        <div className="ft-segmented">
+          <button className={gizmo === 'translate' ? 'on' : ''} onClick={() => setGizmo('translate')}>Move</button>
+          <button className={gizmo === 'rotate' ? 'on' : ''} onClick={() => setGizmo('rotate')}>Rotate</button>
+        </div>
+      )}
+
+      <div className="ft-vlist">
+        {vehicles.map((v) => (
+          <VehicleCard key={v.id} v={v} selected={v.id === selectedId} />
+        ))}
+      </div>
+
+      <div className="ft-addgrid">
+        {VEHICLE_TYPES.map((t) => (
+          <button key={t} className="ft-addbtn" onClick={() => addVehicle(t)}>
+            <span className="ft-addbtn-label">{CATALOG[t].label}</span>
+            <span className="ft-addbtn-sub">{CATALOG[t].sub}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+
+
+==========================================================================================
+FILE: src/lib/catalog.js
+==========================================================================================
+// Vehicle catalogue (pure data, no three.js). Dimensions in metres, mass in kg.
+// `glb` is optional: if the file exists in /public/models it replaces the procedural model.
+
+export const CATALOG = {
+  hatch_s: {
+    label: 'Compact hatchback', sub: 'Alto-class', kind: 'car',
+    L: 3.5, W: 1.49, H: 1.5, mass: 760, color: '#c9ced4', eye: 1.15,
+    glb: '/models/alto.glb', taper: { front: 0.3, rear: 0.1, side: 0.12 }, cabin: 0.6,
+  },
+  hatch_m: {
+    label: 'Hatchback', sub: 'Swift-class', kind: 'car',
+    L: 3.85, W: 1.7, H: 1.52, mass: 950, color: '#b3261e', eye: 1.15,
+    glb: '/models/swift.glb', taper: { front: 0.3, rear: 0.1, side: 0.12 }, cabin: 0.58,
+  },
+  sedan: {
+    label: 'Sedan', sub: 'C-segment', kind: 'car',
+    L: 4.5, W: 1.8, H: 1.45, mass: 1300, color: '#2f4b7c', eye: 1.12,
+    glb: '/models/sedan.glb', taper: { front: 0.3, rear: 0.28, side: 0.12 }, cabin: 0.46,
+  },
+  suv: {
+    label: 'SUV', sub: 'compact / mid', kind: 'car',
+    L: 4.6, W: 1.9, H: 1.75, mass: 1800, color: '#3d4a3a', eye: 1.4,
+    glb: '/models/suv.glb', taper: { front: 0.22, rear: 0.06, side: 0.08 }, cabin: 0.55,
+  },
+  truck: {
+    label: 'Truck', sub: 'rigid, about 9 t', kind: 'truck',
+    L: 8.5, W: 2.5, H: 3.4, mass: 9000, color: '#dfe3e7', eye: 2.4,
+    glb: '/models/truck.glb', crushL: 4.2,
+  },
+  rickshaw: {
+    label: 'Auto-rickshaw', sub: 'three-wheeler', kind: 'rickshaw',
+    L: 2.7, W: 1.35, H: 1.75, mass: 450, color: '#f0c419', eye: 1.3,
+    glb: '/models/rickshaw.glb', crushL: 2.2,
+  },
+  moto: {
+    label: 'Motorcycle', sub: 'with rider', kind: 'moto',
+    L: 2.0, W: 0.75, H: 1.65, mass: 260, color: '#222831', eye: 1.4,
+    glb: '/models/motorcycle.glb', crushL: 1.2,
+  },
+  person: {
+    label: 'Pedestrian', sub: 'adult', kind: 'person',
+    L: 0.5, W: 0.6, H: 1.75, mass: 75, color: '#3b6ea5', eye: 1.6, noCrush: true,
+  },
+}
+
+export const VEHICLE_TYPES = Object.keys(CATALOG)
+
+/** Crush zone reference dims used by deformPositions() */
+export const crushDims = (spec) => ({
+  frontZ: spec.L / 2,
+  Leff: spec.crushL ?? spec.L,
+  W: spec.W,
+  H: spec.H,
+})
+
+export const DEFAULT_SPEED = { person: 5, moto: 45, rickshaw: 35, truck: 45 }
+export const speedFor = (type) => DEFAULT_SPEED[type] ?? 50
+
+export const PALETTE = ['#c9ced4', '#b3261e', '#2f4b7c', '#3d4a3a', '#f0c419', '#dfe3e7', '#222831', '#6b3fa0', '#0f7b6c', '#e07b1a']
+
+
+
+==========================================================================================
+FILE: src/lib/models.js
+==========================================================================================
+// Procedural vehicle models. Every part is built directly in vehicle-local space
+// (+Z forward, +Y up, origin on the ground at the centre) so the crush function can
+// deform all of them consistently. Wheels and people stay rigid.
+
+import * as THREE from 'three'
+import { CATALOG } from './catalog.js'
+
+const seg = (v, k) => Math.max(1, Math.round(v * k))
+
+function box(w, h, l, x = 0, y = 0, z = 0, k = [4, 4, 6]) {
+  const g = new THREE.BoxGeometry(w, h, l, seg(w, k[0]), seg(h, k[1]), seg(l, k[2]))
+  g.translate(x, y, z)
+  return g
+}
+function wheel(r, wd, x, z) {
+  const g = new THREE.CylinderGeometry(r, r, wd, 20)
+  g.rotateZ(Math.PI / 2)
+  g.translate(x, r, z)
+  return g
+}
+function cyl(rt, rb, h, x, y, z, segs = 14) {
+  const g = new THREE.CylinderGeometry(rt, rb, h, segs, 3)
+  g.translate(x, y, z)
+  return g
+}
+function ball(r, x, y, z) {
+  const g = new THREE.SphereGeometry(r, 14, 10)
+  g.translate(x, y, z)
+  return g
+}
+function taper(g, { front = 0.25, rear = 0.12, side = 0.1 }) {
+  g.computeBoundingBox()
+  const bb = g.boundingBox
+  const hy = (bb.max.y - bb.min.y) / 2, cy = (bb.max.y + bb.min.y) / 2
+  const hz = (bb.max.z - bb.min.z) / 2, cz = (bb.max.z + bb.min.z) / 2
+  const p = g.attributes.position
+  for (let i = 0; i < p.count; i++) {
+    const k = Math.max(0, (p.getY(i) - cy) / hy)
+    const rel = (p.getZ(i) - cz) / hz
+    p.setZ(i, cz + (p.getZ(i) - cz) * (1 - (rel > 0 ? front : rear) * k))
+    p.setX(i, p.getX(i) * (1 - side * k))
+  }
+  p.needsUpdate = true
+  g.computeVertexNormals()
+  return g
+}
+
+const P = (geo, mat, deform = true) => ({ geo, mat, deform })
+
+function buildCar(s) {
+  const { L, W, H } = s
+  const clear = 0.2
+  const bodyTop = H * 0.55
+  const bodyH = bodyTop - clear
+  const cabinH = H - bodyTop
+  const cabinL = L * s.cabin
+  const cabinZ = -L * 0.05
+  const r = s.high ? 0.36 : 0.31
+  const parts = [
+    P(box(W, bodyH, L, 0, clear + bodyH / 2, 0, [4, 4, 6]), 'body'),
+    P(taper(box(W * 0.9, cabinH, cabinL, 0, bodyTop + cabinH / 2, cabinZ, [4, 5, 6]), s.taper), 'glass'),
+    P(box(W * 0.74, 0.05, cabinL * 0.62, 0, H - 0.015, cabinZ - 0.02, [4, 1, 4]), 'body'),
+    P(box(W * 1.02, 0.16, 0.14, 0, clear + 0.14, L / 2 - 0.05, [4, 2, 1]), 'dark'),
+    P(box(W * 1.02, 0.16, 0.14, 0, clear + 0.14, -L / 2 + 0.05, [4, 2, 1]), 'dark'),
+    P(box(W * 0.42, 0.13, 0.05, 0, clear + bodyH * 0.6, L / 2 + 0.01, [4, 1, 1]), 'dark'),
+    P(box(W * 0.2, 0.12, 0.05, -W * 0.34, clear + bodyH * 0.72, L / 2 + 0.01, [2, 1, 1]), 'headlight'),
+    P(box(W * 0.2, 0.12, 0.05, W * 0.34, clear + bodyH * 0.72, L / 2 + 0.01, [2, 1, 1]), 'headlight'),
+    P(box(W * 0.2, 0.12, 0.05, -W * 0.34, clear + bodyH * 0.72, -L / 2 - 0.01, [2, 1, 1]), 'tail'),
+    P(box(W * 0.2, 0.12, 0.05, W * 0.34, clear + bodyH * 0.72, -L / 2 - 0.01, [2, 1, 1]), 'tail'),
+  ]
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) parts.push(P(wheel(r, 0.22, sx * (W / 2 - 0.09), sz * L * 0.32), 'dark', false))
+  return parts
+}
+
+function buildTruck(s) {
+  const { L, W } = s
+  const parts = [
+    P(box(W * 0.85, 0.35, L * 0.96, 0, 0.62, 0, [2, 2, 3]), 'dark'),
+    P(box(W, 2.0, 2.1, 0, 0.8 + 1.0, L / 2 - 1.1, [3, 3, 4]), 'accent'),
+    P(box(W * 0.92, 0.85, 0.06, 0, 2.15, L / 2 + 0.02, [3, 3, 1]), 'glass'),
+    P(box(W * 1.02, 0.25, 0.2, 0, 0.9, L / 2 - 0.02, [3, 2, 1]), 'dark'),
+    P(box(W * 0.18, 0.16, 0.05, -W * 0.36, 1.05, L / 2 + 0.03, [2, 1, 1]), 'headlight'),
+    P(box(W * 0.18, 0.16, 0.05, W * 0.36, 1.05, L / 2 + 0.03, [2, 1, 1]), 'headlight'),
+    P(box(W, 2.4, L - 3.1, 0, 0.85 + 1.2, -L / 2 + (L - 3.1) / 2, [2, 2, 2]), 'cargo'),
+    P(box(W * 0.2, 0.16, 0.05, -W * 0.36, 1.05, -L / 2 - 0.02, [2, 1, 1]), 'tail'),
+    P(box(W * 0.2, 0.16, 0.05, W * 0.36, 1.05, -L / 2 - 0.02, [2, 1, 1]), 'tail'),
+  ]
+  for (const sx of [-1, 1]) {
+    parts.push(P(wheel(0.5, 0.3, sx * (W / 2 - 0.12), L / 2 - 1.3), 'dark', false))
+    parts.push(P(wheel(0.5, 0.3, sx * (W / 2 - 0.12), -L / 2 + 1.5), 'dark', false))
+    parts.push(P(wheel(0.5, 0.3, sx * (W / 2 - 0.12), -L / 2 + 2.8), 'dark', false))
+  }
+  return parts
+}
+
+function buildRickshaw(s) {
+  const { L, W, H } = s
+  const parts = [
+    P(box(W * 0.95, 0.5, L * 0.62, 0, 0.6, -0.35, [3, 3, 4]), 'body'),
+    P(box(W * 0.6, 0.75, 0.75, 0, 0.72, L / 2 - 0.5, [3, 3, 4]), 'body'),
+    P(box(W * 0.85, 0.16, 0.6, 0, 0.92, -0.6, [3, 1, 3]), 'dark'),
+    P(box(W * 0.78, 0.55, 0.05, 0, 1.3, L / 2 - 0.8, [3, 3, 1]), 'glass'),
+    P(box(W * 1.02, 0.06, L * 0.78, 0, H - 0.03, -0.18, [3, 1, 5]), 'dark'),
+    P(box(0.06, H - 0.9, 0.06, -W * 0.46, 0.9 + (H - 0.9) / 2, -0.95, [1, 3, 1]), 'body'),
+    P(box(0.06, H - 0.9, 0.06, W * 0.46, 0.9 + (H - 0.9) / 2, -0.95, [1, 3, 1]), 'body'),
+    P(box(0.06, H - 0.9, 0.06, -W * 0.4, 0.9 + (H - 0.9) / 2, 0.42, [1, 3, 1]), 'body'),
+    P(box(0.06, H - 0.9, 0.06, W * 0.4, 0.9 + (H - 0.9) / 2, 0.42, [1, 3, 1]), 'body'),
+    P(box(0.22, 0.16, 0.06, 0, 0.98, L / 2 - 0.1, [1, 1, 1]), 'headlight'),
+    P(box(0.5, 0.06, 0.06, 0, 1.15, L / 2 - 0.65, [2, 1, 1]), 'dark'),
+    P(box(0.3, 0.1, 0.05, 0, 0.75, -L / 2 - 0.02, [1, 1, 1]), 'tail'),
+    P(wheel(0.25, 0.14, 0, L / 2 - 0.45), 'dark', false),
+    P(wheel(0.25, 0.14, -(W / 2 - 0.08), -L / 2 + 0.5), 'dark', false),
+    P(wheel(0.25, 0.14, W / 2 - 0.08, -L / 2 + 0.5), 'dark', false),
+  ]
+  return parts
+}
+
+function buildMoto() {
+  return [
+    P(box(0.2, 0.3, 1.0, 0, 0.55, -0.1, [4, 3, 5]), 'dark'),
+    P(box(0.3, 0.25, 0.42, 0, 0.86, 0.15, [3, 3, 4]), 'body'),
+    P(box(0.26, 0.1, 0.55, 0, 0.8, -0.38, [3, 1, 4]), 'dark'),
+    P(box(0.07, 0.62, 0.07, 0, 0.62, 0.66, [1, 3, 1]), 'dark'),
+    P(box(0.62, 0.05, 0.05, 0, 1.02, 0.58, [4, 1, 1]), 'dark'),
+    P(box(0.15, 0.15, 0.08, 0, 0.92, 0.74, [2, 2, 1]), 'headlight'),
+    P(box(0.14, 0.08, 0.05, 0, 0.82, -0.86, [2, 1, 1]), 'tail'),
+    P(wheel(0.32, 0.12, 0, 0.68), 'dark', false),
+    P(wheel(0.32, 0.12, 0, -0.68), 'dark', false),
+    P(cyl(0.17, 0.19, 0.55, 0, 1.22, -0.25), 'clothes', false),
+    P(ball(0.115, 0, 1.64, -0.18), 'dark', false),
+    P(box(0.34, 0.5, 0.26, 0, 0.82, -0.22, [2, 2, 2]), 'clothes', false),
+  ]
+}
+
+function buildPerson() {
+  return [
+    P(box(0.14, 0.85, 0.16, -0.1, 0.425, 0, [1, 1, 1]), 'dark', false),
+    P(box(0.14, 0.85, 0.16, 0.1, 0.425, 0, [1, 1, 1]), 'dark', false),
+    P(cyl(0.2, 0.19, 0.65, 0, 1.17, 0), 'clothes', false),
+    P(box(0.09, 0.6, 0.09, -0.28, 1.15, 0, [1, 1, 1]), 'clothes', false),
+    P(box(0.09, 0.6, 0.09, 0.28, 1.15, 0, [1, 1, 1]), 'clothes', false),
+    P(ball(0.12, 0, 1.62, 0), 'skin', false),
+  ]
+}
+
+export function buildProcedural(type) {
+  const s = CATALOG[type]
+  let parts
+  switch (s.kind) {
+    case 'truck': parts = buildTruck(s); break
+    case 'rickshaw': parts = buildRickshaw(s); break
+    case 'moto': parts = buildMoto(s); break
+    case 'person': parts = buildPerson(s); break
+    default: parts = buildCar(s)
+  }
+  for (const p of parts) p.orig = p.geo.attributes.position.array.slice()
+  return parts
+}
+
+/** Flatten a loaded GLTF scene into crushable parts, normalised to real-world size. */
+export function flattenGlb(scene, spec) {
+  scene.updateMatrixWorld(true)
+  const parts = []
+  scene.traverse((o) => {
+    if (!o.isMesh || !o.geometry) return
+    const g = o.geometry.clone()
+    g.applyMatrix4(o.matrixWorld)
+    const rigid = /wheel|tyre|tire/i.test(o.name || '')
+    parts.push({ geo: g, material: o.material, mat: 'body', deform: !rigid })
+  })
+  const box3 = new THREE.Box3()
+  parts.forEach((p) => { p.geo.computeBoundingBox(); box3.union(p.geo.boundingBox) })
+  const size = box3.getSize(new THREE.Vector3())
+  const c = box3.getCenter(new THREE.Vector3())
+  const rotate = size.x > size.z
+  const len = rotate ? size.x : size.z
+  const m = new THREE.Matrix4()
+    .makeScale(spec.L / len, spec.L / len, spec.L / len)
+    .multiply(new THREE.Matrix4().makeRotationY((rotate ? -Math.PI / 2 : 0) + (spec.glbFlip ? Math.PI : 0)))
+    .multiply(new THREE.Matrix4().makeTranslation(-c.x, -box3.min.y, -c.z))
+  for (const p of parts) {
+    p.geo.applyMatrix4(m)
+    p.orig = p.geo.attributes.position.array.slice()
+  }
+  return parts
+}
+
+export function makeMaterials(color) {
+  return {
+    body: new THREE.MeshStandardMaterial({ color, metalness: 0.35, roughness: 0.45 }),
+    accent: new THREE.MeshStandardMaterial({ color, metalness: 0.3, roughness: 0.5 }),
+    cargo: new THREE.MeshStandardMaterial({ color: '#d9dde2', roughness: 0.7 }),
+    glass: new THREE.MeshStandardMaterial({ color: '#0d1620', metalness: 0.7, roughness: 0.12 }),
+    dark: new THREE.MeshStandardMaterial({ color: '#15181c', roughness: 0.85 }),
+    headlight: new THREE.MeshStandardMaterial({ color: '#fff3c4', emissive: '#fff3c4', emissiveIntensity: 0.6 }),
+    tail: new THREE.MeshStandardMaterial({ color: '#7a0f14', emissive: '#ff1a1a', emissiveIntensity: 0.5 }),
+    skin: new THREE.MeshStandardMaterial({ color: '#c99a76', roughness: 0.8 }),
+    clothes: new THREE.MeshStandardMaterial({ color, roughness: 0.85 }),
+  }
+}
+
+/** eye position + look direction for the driver / witness camera */
+export function eyeFor(v, pose) {
+  const spec = CATALOG[v.type]
+  const th = Math.PI - pose.bearing * (Math.PI / 180)
+  const lx = spec.kind === 'person' ? 0 : -spec.W * 0.2 // right-hand drive: driver sits on the right
+  const lz = spec.L * 0.05
+  const c = Math.cos(th), s = Math.sin(th)
+  return {
+    pos: [pose.x + lx * c + lz * s, spec.eye, pose.z - lx * s + lz * c],
+    dir: [Math.sin(th), 0, Math.cos(th)],
+  }
+}
+
+
+
+==========================================================================================
+FILE: src/lib/osmGeometry.js
+==========================================================================================
+// OpenStreetMap JSON -> merged three.js geometries + collision-aware vegetation
+// and street furniture (lights, parked cars, crosswalks/stop signs at junctions).
+// Everything is merged into a handful of draw calls so it stays fast on phones.
+
+import * as THREE from 'three'
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
+import { makeProjector, mulberry32, clamp } from './geo.js'
+
+const ROAD = {
+  motorway: { w: 14, rank: 6 }, motorway_link: { w: 7, rank: 5 },
+  trunk: { w: 12, rank: 6 }, trunk_link: { w: 7, rank: 5 },
+  primary: { w: 11, rank: 5 }, primary_link: { w: 6.5, rank: 4 },
+  secondary: { w: 9, rank: 4 }, secondary_link: { w: 6, rank: 3 },
+  tertiary: { w: 8, rank: 3 }, tertiary_link: { w: 6, rank: 3 },
+  unclassified: { w: 6.5, rank: 2 }, residential: { w: 6.5, rank: 2 },
+  road: { w: 6, rank: 2 }, living_street: { w: 5, rank: 1 }, service: { w: 4, rank: 1 },
+}
+
+const WALLS = ['#c9b8a3', '#b8a99a', '#d6cfc4', '#a89f91', '#cbbfae', '#9aa3a8', '#c2a48a', '#b5b0a6', '#d8c7b0']
+const CAR_COLORS = ['#c43b3b', '#3b6fc4', '#d8d8d8', '#2e2e2e', '#c4a33b', '#5a8f5a', '#8a8f99']
+const LAYER_Y = { shoulder: 0.02, road: 0.04, mark: 0.06 }
+
+// ---------------------------------------------------------------- parsing
+
+function clipRuns(pts, R) {
+  const R2 = R * R
+  const runs = []
+  let cur = []
+  for (const p of pts) {
+    if (p[0] * p[0] + p[1] * p[1] <= R2) cur.push(p)
+    else {
+      if (cur.length > 1) runs.push(cur)
+      cur = []
+    }
+  }
+  if (cur.length > 1) runs.push(cur)
+  return runs
+}
+
+function centroid(pts) {
+  let x = 0, z = 0
+  for (const p of pts) { x += p[0]; z += p[1] }
+  return [x / pts.length, z / pts.length]
+}
+
+export function parseOsm(json, proj, radius) {
+  const roads = []
+  const buildings = []
+  for (const el of json.elements || []) {
+    if (el.type !== 'way' || !el.geometry || el.geometry.length < 2) continue
+    const tags = el.tags || {}
+    const pts = el.geometry.map((g) => proj.toLocal(g.lat, g.lon))
+    if (tags.highway) {
+      const cls = ROAD[tags.highway]
+      if (!cls) continue
+      let w = cls.w
+      const lanes = parseInt(tags.lanes, 10)
+      if (lanes > 0) w = clamp(lanes * 3.3, 3, 32)
+      const oneway = tags.oneway === 'yes' || tags.junction === 'roundabout'
+      for (const run of clipRuns(pts, radius * 1.35)) {
+        roads.push({ id: el.id, pts: run, width: w, rank: cls.rank, oneway, name: tags.name })
+      }
+    } else if (tags.building) {
+      let poly = pts
+      const f = poly[0], l = poly[poly.length - 1]
+      if (f[0] === l[0] && f[1] === l[1]) poly = poly.slice(0, -1)
+      if (poly.length < 3) continue
+      const c = centroid(poly)
+      if (Math.hypot(c[0], c[1]) > radius * 1.15) continue
+      const rnd = mulberry32(el.id)
+      let h = parseFloat(tags.height)
+      if (!(h > 0)) {
+        const lv = parseFloat(tags['building:levels'])
+        h = lv > 0 ? lv * 3.2 : 6 + rnd() * 8
+      }
+      buildings.push({ id: el.id, pts: poly, height: clamp(h, 3, 180), c, dist: Math.hypot(c[0], c[1]) })
+    }
+  }
+  buildings.sort((a, b) => a.dist - b.dist)
+  return { roads, buildings: buildings.slice(0, 1800) }
+}
+
+// ---------------------------------------------------------------- roads
+
+function smoothLine(pts, spacing = 2) {
+  const clean = [pts[0]]
+  for (let i = 1; i < pts.length; i++) {
+    const p = clean[clean.length - 1]
+    if (Math.hypot(pts[i][0] - p[0], pts[i][1] - p[1]) > 0.05) clean.push(pts[i])
+  }
+  if (clean.length < 2) return null
+  const curve = new THREE.CatmullRomCurve3(
+    clean.map((p) => new THREE.Vector3(p[0], 0, p[1])),
+    false,
+    'centripetal',
+  )
+  const len = curve.getLength()
+  const n = clamp(Math.ceil(len / spacing), 2, 1500)
+  return curve.getSpacedPoints(n).map((p) => [p.x, p.z])
+}
+
+function addRibbon(acc, pts, width, y) {
+  if (pts.length < 2) return
+  const hw = width / 2
+  const base = acc.pos.length / 3
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[Math.max(0, i - 1)]
+    const b = pts[Math.min(pts.length - 1, i + 1)]
+    let tx = b[0] - a[0], tz = b[1] - a[1]
+    const l = Math.hypot(tx, tz) || 1
+    tx /= l; tz /= l
+    const nx = -tz, nz = tx
+    acc.pos.push(pts[i][0] - nx * hw, y, pts[i][1] - nz * hw, pts[i][0] + nx * hw, y, pts[i][1] + nz * hw)
+    if (i > 0) {
+      const k = base + (i - 1) * 2
+      acc.idx.push(k, k + 1, k + 2, k + 1, k + 3, k + 2)
+    }
+  }
+}
+
+// crosswalk zebra stripes: short ribbon segments across the road, alternating gaps
+function addCrosswalk(acc, cx, cz, tx, tz, halfSpan, y) {
+  const nx = -tz, nz = tx
+  const stripeLen = 1.1, gap = 0.9, stripeW = halfSpan * 2 - 0.6
+  let s = -halfSpan + stripeLen / 2
+  while (s < halfSpan - stripeLen / 2) {
+    const c0x = cx + nx * s, c0z = cz + nz * s
+    const c1x = cx + nx * (s + stripeLen), c1z = cz + nz * (s + stripeLen)
+    const hw = stripeW / 2
+    const base = acc.pos.length / 3
+    for (const [px, pz] of [[c0x, c0z], [c1x, c1z]]) {
+      acc.pos.push(px - tx * hw, y, pz - tz * hw, px + tx * hw, y, pz + tz * hw)
+    }
+    acc.idx.push(base, base + 1, base + 2, base + 1, base + 3, base + 2)
+    s += stripeLen + gap
+  }
+}
+
+function accToGeometry(acc) {
+  if (!acc.pos.length) return null
+  const g = new THREE.BufferGeometry()
+  g.setAttribute('position', new THREE.Float32BufferAttribute(acc.pos, 3))
+  const n = new Float32Array(acc.pos.length)
+  for (let i = 1; i < n.length; i += 3) n[i] = 1
+  g.setAttribute('normal', new THREE.BufferAttribute(n, 3))
+  g.setIndex(acc.idx)
+  g.computeBoundingSphere()
+  return g
+}
+
+// ---------------------------------------------------------------- spatial hash + tests
+
+class Grid {
+  constructor(cell) { this.c = cell; this.m = new Map() }
+  k(i, j) { return i + ',' + j }
+  add(x, z, item) {
+    const key = this.k(Math.floor(x / this.c), Math.floor(z / this.c))
+    const a = this.m.get(key)
+    if (a) a.push(item); else this.m.set(key, [item])
+  }
+  addBox(x0, z0, x1, z1, item) {
+    for (let i = Math.floor(x0 / this.c); i <= Math.floor(x1 / this.c); i++)
+      for (let j = Math.floor(z0 / this.c); j <= Math.floor(z1 / this.c); j++) {
+        const key = this.k(i, j)
+        const a = this.m.get(key)
+        if (a) a.push(item); else this.m.set(key, [item])
+      }
+  }
+  near(x, z, ring = 1) {
+    const ci = Math.floor(x / this.c), cj = Math.floor(z / this.c)
+    const out = []
+    for (let i = ci - ring; i <= ci + ring; i++)
+      for (let j = cj - ring; j <= cj + ring; j++) {
+        const a = this.m.get(this.k(i, j))
+        if (a) for (const it of a) out.push(it)
+      }
+    return out
+  }
+}
+
+function pointInPoly(x, z, poly) {
+  let inside = false
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i][0], zi = poly[i][1], xj = poly[j][0], zj = poly[j][1]
+    if (zi > z !== zj > z && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) inside = !inside
+  }
+  return inside
+}
+
+function distToSeg(px, pz, ax, az, bx, bz) {
+  const dx = bx - ax, dz = bz - az
+  const l2 = dx * dx + dz * dz
+  let t = l2 ? ((px - ax) * dx + (pz - az) * dz) / l2 : 0
+  t = clamp(t, 0, 1)
+  return Math.hypot(px - (ax + t * dx), pz - (az + t * dz))
+}
+
+function distToPoly(px, pz, poly) {
+  let d = Infinity
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    d = Math.min(d, distToSeg(px, pz, poly[j][0], poly[j][1], poly[i][0], poly[i][1]))
+  }
+  return d
+}
+
+// ---------------------------------------------------------------- junction detection
+// Finds where two different road lines pass close to each other, using a spatial
+// hash over subsampled points so it stays roughly O(n) instead of checking every
+// pair of roads against every other. Each match becomes a candidate junction;
+// nearby candidates are merged into one node so a single real intersection
+// doesn't produce a cluster of duplicates.
+
+function findIntersections(lines, { sampleSpacing = 10, mergeRadius = 14, maxCount = 140 } = {}) {
+  const ptGrid = new Grid(12)
+  const samples = []
+  lines.forEach((l, li) => {
+    const step = Math.max(1, Math.round(sampleSpacing / 2))
+    for (let i = step; i < l.pts.length - step; i += step) {
+      const p = l.pts[i]
+      const pa = l.pts[i - 1], pb = l.pts[i + 1]
+      let tx = pb[0] - pa[0], tz = pb[1] - pa[1]
+      const len = Math.hypot(tx, tz) || 1
+      tx /= len; tz /= len
+      const s = { x: p[0], z: p[1], li, hw: l.hw, tx, tz }
+      samples.push(s)
+      ptGrid.add(p[0], p[1], s)
+    }
+  })
+  const resultGrid = new Grid(mergeRadius)
+  const found = []
+  for (const s of samples) {
+    if (found.length >= maxCount) break
+    for (const other of ptGrid.near(s.x, s.z, 1)) {
+      if (other.li === s.li) continue
+      const d = Math.hypot(s.x - other.x, s.z - other.z)
+      if (d < s.hw + other.hw + 2.5) {
+        const mx = (s.x + other.x) / 2, mz = (s.z + other.z) / 2
+        if (!resultGrid.near(mx, mz, 1).some((f) => Math.hypot(f.x - mx, f.z - mz) < mergeRadius)) {
+          const node = { x: mx, z: mz, hw: Math.max(s.hw, other.hw), tx: s.tx, tz: s.tz }
+          found.push(node)
+          resultGrid.add(mx, mz, node)
+        }
+        break
+      }
+    }
+  }
+  return found
+}
+
+// ---------------------------------------------------------------- main builder
+
+export function buildWorld(json, { lat, lon }, { radius = 800 } = {}) {
+  const proj = makeProjector(lat, lon)
+  const { roads, buildings } = parseOsm(json, proj, radius)
+
+  // --- roads
+  const shoulder = { pos: [], idx: [] }
+  const asphalt = { pos: [], idx: [] }
+  const marks = { pos: [], idx: [] }
+  const crosswalks = { pos: [], idx: [] }
+  const lines = []
+  const roadGrid = new Grid(20)
+  for (const r of roads) {
+    const sm = smoothLine(r.pts, 2)
+    if (!sm) continue
+    const rankLift = r.rank * 0.0005
+    addRibbon(shoulder, sm, r.width + 1.6, LAYER_Y.shoulder)
+    addRibbon(asphalt, sm, r.width, LAYER_Y.road + rankLift)
+    if (!r.oneway && r.width >= 6 && r.rank >= 2) {
+      // dashed centre line, trimmed near the ends so it does not run through junctions
+      for (let s = 3; s + 2 < sm.length - 3; s += 5) addRibbon(marks, sm.slice(s, s + 3), 0.16, LAYER_Y.mark)
+    }
+    const line = { id: r.id, pts: sm, hw: r.width / 2, rank: r.rank }
+    lines.push(line)
+    for (let i = 0; i < sm.length - 1; i++) {
+      const mx = (sm[i][0] + sm[i + 1][0]) / 2, mz = (sm[i][1] + sm[i + 1][1]) / 2
+      roadGrid.add(mx, mz, [sm[i][0], sm[i][1], sm[i + 1][0], sm[i + 1][1], line.hw])
+    }
+  }
+
+  // --- intersections: crosswalk stripes baked straight into geometry, plus data
+  // for a stop-sign post per junction (rendered as instances in World.jsx)
+  const intersections = findIntersections(lines)
+  for (const n of intersections) {
+    addCrosswalk(crosswalks, n.x, n.z, n.tx, n.tz, n.hw + 1.2, LAYER_Y.mark + 0.002)
+  }
+
+  // --- buildings
+  const bGrid = new Grid(40)
+  const bGeos = []
+  buildings.forEach((b, idx) => {
+    const shape = new THREE.Shape()
+    b.pts.forEach((p, i) => (i ? shape.lineTo(p[0], -p[1]) : shape.moveTo(p[0], -p[1])))
+    let g
+    try {
+      g = new THREE.ExtrudeGeometry(shape, { depth: b.height, bevelEnabled: false })
+    } catch {
+      return
+    }
+    g.rotateX(-Math.PI / 2)
+    g.deleteAttribute('uv')
+    g.clearGroups()
+    const col = new THREE.Color(WALLS[b.id % WALLS.length])
+    const n = g.attributes.position.count
+    const arr = new Float32Array(n * 3)
+    for (let i = 0; i < n; i++) { arr[i * 3] = col.r; arr[i * 3 + 1] = col.g; arr[i * 3 + 2] = col.b }
+    g.setAttribute('color', new THREE.BufferAttribute(arr, 3))
+    bGeos.push(g)
+    let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity
+    for (const p of b.pts) { x0 = Math.min(x0, p[0]); x1 = Math.max(x1, p[0]); z0 = Math.min(z0, p[1]); z1 = Math.max(z1, p[1]) }
+    bGrid.addBox(x0 - 4, z0 - 4, x1 + 4, z1 + 4, b)
+  })
+  const buildingGeo = bGeos.length ? mergeGeometries(bGeos, false) : null
+  bGeos.forEach((g) => g.dispose())
+
+  // --- collision helpers for scattering
+  const roadClear = (x, z, margin) => {
+    for (const s of roadGrid.near(x, z, 1)) {
+      if (distToSeg(x, z, s[0], s[1], s[2], s[3]) < s[4] + margin) return false
+    }
+    return true
+  }
+  const buildingClear = (x, z, margin) => {
+    for (const b of bGrid.near(x, z, 0)) {
+      if (pointInPoly(x, z, b.pts) || distToPoly(x, z, b.pts) < margin) return false
+    }
+    return true
+  }
+
+  function scatter(density = 0.6, seedOffset = 0) {
+    const rnd = mulberry32(Math.floor(Math.abs(lat * 1e4 + lon * 1e4)) + seedOffset)
+    // trees: half along avenues, half scattered in open ground
+    const trees = []
+    const treeGrid = new Grid(5)
+    const maxTrees = Math.round(900 * density)
+    const avenueLines = lines.filter((l) => l.rank <= 4 && l.pts.length > 2)
+    for (let tries = 0; tries < maxTrees * 5 && trees.length < maxTrees; tries++) {
+      let x, z
+      if (avenueLines.length && rnd() < 0.55) {
+        const l = avenueLines[Math.floor(rnd() * avenueLines.length)]
+        const i = 1 + Math.floor(rnd() * (l.pts.length - 2))
+        const a = l.pts[i - 1], b = l.pts[i + 1]
+        let tx = b[0] - a[0], tz = b[1] - a[1]
+        const len = Math.hypot(tx, tz) || 1
+        tx /= len; tz /= len
+        const side = rnd() < 0.5 ? -1 : 1
+        const off = l.hw + 2.2 + rnd() * 3.5
+        x = l.pts[i][0] - tz * off * side
+        z = l.pts[i][1] + tx * off * side
+      } else {
+        const a = rnd() * Math.PI * 2, r = Math.sqrt(rnd()) * radius * 0.85
+        x = Math.cos(a) * r; z = Math.sin(a) * r
+      }
+      if (!roadClear(x, z, 1.6) || !buildingClear(x, z, 2.5)) continue
+      if (treeGrid.near(x, z, 1).some((t) => Math.hypot(t[0] - x, t[1] - z) < 3.6)) continue
+      const t = [x, z, 0.8 + rnd() * 0.9, rnd() * Math.PI * 2]
+      trees.push(t)
+      treeGrid.add(x, z, t)
+    }
+
+    // houses: only fill in when OSM has few buildings (rural / poorly mapped areas)
+    const houses = []
+    if (buildings.length < 30) {
+      const hLines = lines.filter((l) => l.rank <= 3 && l.pts.length > 2)
+      const hGrid = new Grid(15)
+      for (let tries = 0; tries < 600 && houses.length < 90 && hLines.length; tries++) {
+        const l = hLines[Math.floor(rnd() * hLines.length)]
+        const i = 1 + Math.floor(rnd() * (l.pts.length - 2))
+        const a = l.pts[i - 1], b = l.pts[i + 1]
+        let tx = b[0] - a[0], tz = b[1] - a[1]
+        const len = Math.hypot(tx, tz) || 1
+        tx /= len; tz /= len
+        const side = rnd() < 0.5 ? -1 : 1
+        const w = 6 + rnd() * 5, d = 6 + rnd() * 4, h = 3 + rnd() * 3
+        const off = l.hw + 6 + rnd() * 5 + d / 2
+        const x = l.pts[i][0] - tz * off * side
+        const z = l.pts[i][1] + tx * off * side
+        const rot = Math.atan2(-tz, tx)
+        const corners = [[0, 0], [w / 2, d / 2], [-w / 2, d / 2], [w / 2, -d / 2], [-w / 2, -d / 2]].map(([cx, cz]) => [
+          x + cx * Math.cos(rot) + cz * Math.sin(rot),
+          z - cx * Math.sin(rot) + cz * Math.cos(rot),
+        ])
+        if (!corners.every((p) => roadClear(p[0], p[1], 3) && buildingClear(p[0], p[1], 1))) continue
+        if (hGrid.near(x, z, 1).some((o) => Math.hypot(o.x - x, o.z - z) < 11)) continue
+        const house = { x, z, w, d, h, rot, color: WALLS[Math.floor(rnd() * WALLS.length)] }
+        houses.push(house)
+        hGrid.add(x, z, house)
+      }
+      // drop trees that landed inside a house footprint
+      for (let i = trees.length - 1; i >= 0; i--) {
+        if (houses.some((h) => Math.hypot(h.x - trees[i][0], h.z - trees[i][1]) < Math.max(h.w, h.d) * 0.75 + 1)) trees.splice(i, 1)
+      }
+    }
+
+    // streetlights: along avenue-ish roads, alternating sides at regular spacing
+    const lights = []
+    for (const l of lines.filter((l) => l.rank >= 2 && l.pts.length > 9)) {
+      let n = 0
+      for (let i = 4; i < l.pts.length - 4; i += 9, n++) {
+        const a = l.pts[i - 1], b = l.pts[i + 1]
+        let tx = b[0] - a[0], tz = b[1] - a[1]
+        const len = Math.hypot(tx, tz) || 1
+        tx /= len; tz /= len
+        const side = n % 2 === 0 ? 1 : -1
+        const off = l.hw + 1.4
+        const x = l.pts[i][0] - tz * off * side
+        const z = l.pts[i][1] + tx * off * side
+        if (!roadClear(x, z, 0.8) || !buildingClear(x, z, 1)) continue
+        lights.push({ x, z, rot: Math.atan2(-tz, tx) })
+      }
+    }
+
+    // parked cars: along minor (residential/service) roads, one side per street, with gaps
+    const cars = []
+    for (const l of lines.filter((l) => l.rank <= 2 && l.pts.length > 7)) {
+      if (rnd() < 0.35) continue // not every street has parking today
+      const side = rnd() < 0.5 ? 1 : -1
+      for (let i = 3; i < l.pts.length - 3; i += 4) {
+        if (rnd() < 0.4) continue
+        const a = l.pts[i - 1], b = l.pts[i + 1]
+        let tx = b[0] - a[0], tz = b[1] - a[1]
+        const len = Math.hypot(tx, tz) || 1
+        tx /= len; tz /= len
+        const off = l.hw + 1.1
+        const x = l.pts[i][0] - tz * off * side
+        const z = l.pts[i][1] + tx * off * side
+        if (!roadClear(x, z, 0.3) || !buildingClear(x, z, 1.5)) continue
+        cars.push({ x, z, rot: Math.atan2(-tz, tx), color: CAR_COLORS[Math.floor(rnd() * CAR_COLORS.length)] })
+      }
+    }
+
+    // junction furniture: a stop-sign post set back from each crosswalk's edge
+    const signs = intersections.slice(0, 90).map((n) => {
+      const nx = -n.tz, nz = n.tx
+      const off = n.hw + 2.2
+      return { x: n.x + nx * off, z: n.z + nz * off, rot: Math.atan2(-n.tz, n.tx) }
+    })
+
+    return {
+      trees, houses,
+      lights: lights.slice(0, 260),
+      cars: cars.slice(0, 220),
+      signs,
+    }
+  }
+
+  return {
+    proj,
+    roadGeo: accToGeometry(asphalt),
+    shoulderGeo: accToGeometry(shoulder),
+    markGeo: accToGeometry(marks),
+    crosswalkGeo: accToGeometry(crosswalks),
+    buildingGeo,
+    scatter,
+    stats: { roads: roads.length, buildings: buildings.length, junctions: intersections.length },
+    roadNames: [...new Set(roads.map((r) => r.name).filter(Boolean))].slice(0, 8),
+  }
+}
+
+
+
+==========================================================================================
+FILE: src/lib/physics.js
+==========================================================================================
+// Forensic physics helpers. SI units internally (m, s, kg); km/h at the UI boundary.
+// These are first-order screening calculations - not a substitute for a qualified reconstruction.
+
+import { bearingToVec, vecToBearing } from './geo.js'
+import { crushDepth } from './crush.js'
+import { CATALOG, crushDims } from './catalog.js'
+
+export const G = 9.80665
+export const kmh2ms = (v) => v / 3.6
+export const ms2kmh = (v) => v * 3.6
+
+/** Work-energy: speed lost while skidding distance d.  v = sqrt(2 g (mu*eff + grade) d) */
+export function skidSpeed(d, mu, gradePct = 0, eff = 1) {
+  const f = mu * eff + gradePct / 100
+  if (d <= 0 || f <= 0) return 0
+  return Math.sqrt(2 * G * f * d)
+}
+
+/** Campbell-style equivalent barrier speed from crush depth C (m). Indicative defaults. */
+export const CAMPBELL = { b0: 2.2, b1: 23 }
+export const crushEBS = (C, { b0, b1 } = CAMPBELL) => (C <= 0 ? 0 : b0 + b1 * C)
+
+export const velOf = (speedMs, bearing) => {
+  const [x, z] = bearingToVec(bearing)
+  return [x * speedMs, z * speedMs]
+}
+const speedOfVec = (v) => Math.hypot(v[0], v[1])
+const bearingOfVec = (v) => (speedOfVec(v) < 0.05 ? null : vecToBearing(v[0], v[1]))
+
+/**
+ * Two-body impact along a line of impact n (unit vector A -> B), coefficient of restitution e.
+ * Momentum is conserved exactly; tangential velocity is unchanged (no friction, no spin).
+ */
+export function forwardImpact(A, B, { e = 0.2, n }) {
+  const vr = [A.vel[0] - B.vel[0], A.vel[1] - B.vel[1]]
+  const vn = vr[0] * n[0] + vr[1] * n[1]
+  const KE = (m, v) => 0.5 * m * (v[0] ** 2 + v[1] ** 2)
+  const before = KE(A.mass, A.vel) + KE(B.mass, B.vel)
+  if (vn <= 0) return { separating: true }
+  const J = ((1 + e) * vn) / (1 / A.mass + 1 / B.mass)
+  const a = [A.vel[0] - (J / A.mass) * n[0], A.vel[1] - (J / A.mass) * n[1]]
+  const b = [B.vel[0] + (J / B.mass) * n[0], B.vel[1] + (J / B.mass) * n[1]]
+  const after = KE(A.mass, a) + KE(B.mass, b)
+  const dv = (m, v0, v1) => Math.hypot(v1[0] - v0[0], v1[1] - v0[1])
+  return {
+    closing: vn,
+    a: { speed: speedOfVec(a), bearing: bearingOfVec(a), dv: dv(A.mass, A.vel, a) },
+    b: { speed: speedOfVec(b), bearing: bearingOfVec(b), dv: dv(B.mass, B.vel, b) },
+    impulse: J,
+    keLoss: before - after,
+    keBefore: before,
+    pBefore: [A.mass * A.vel[0] + B.mass * B.vel[0], A.mass * A.vel[1] + B.mass * B.vel[1]],
+    pAfter: [A.mass * a[0] + B.mass * b[0], A.mass * a[1] + B.mass * b[1]],
+  }
+}
+
+/**
+ * Reverse momentum: known pre-impact directions + post-impact velocities -> pre-impact speeds.
+ * Solves  mA*sA*dA + mB*sB*dB = mA*uA + mB*uB  (2 equations, 2 unknowns).
+ */
+export function reverseMomentum(A, B) {
+  const P = [A.mass * A.post[0] + B.mass * B.post[0], A.mass * A.post[1] + B.mass * B.post[1]]
+  const cross = A.dir[0] * B.dir[1] - B.dir[0] * A.dir[1]
+  if (Math.abs(cross) < 0.05) {
+    return {
+      error: 'Pre-impact headings are almost parallel (head-on or rear-end). Momentum alone cannot separate the two speeds — measure one speed independently (skid or crush) and solve for the other.',
+    }
+  }
+  const det = A.mass * B.mass * cross
+  const sA = (P[0] * B.mass * B.dir[1] - B.mass * B.dir[0] * P[1]) / det
+  const sB = (A.mass * A.dir[0] * P[1] - A.mass * A.dir[1] * P[0]) / det
+  const warn = []
+  if (sA < 0) warn.push('Vehicle A solves to a negative speed: its heading or post-impact direction is inconsistent.')
+  if (sB < 0) warn.push('Vehicle B solves to a negative speed: its heading or post-impact direction is inconsistent.')
+  return { speedA: sA, speedB: sB, warn, P }
+}
+
+// ---- playback kinematics -------------------------------------------------------------
+
+/** distance behind the impact point, tau seconds before impact (decelerating through the skid) */
+export function preBackDist(v, tau) {
+  const vi = kmh2ms(v.speed)
+  const a = v.mu * G
+  if (v.skid <= 0 || a <= 0) return vi * tau
+  const tSk = (-vi + Math.sqrt(vi * vi + 2 * a * v.skid)) / a
+  if (tau <= tSk) return vi * tau + 0.5 * a * tau * tau
+  const v0 = vi + a * tSk
+  return v.skid + v0 * (tau - tSk)
+}
+
+export const postSpeedOf = (v) => (v.postDist > 0 ? skidSpeed(v.postDist, v.mu, 0) : 0)
+
+export function postAlongDist(v, t) {
+  if (v.postDist <= 0) return 0
+  const u = postSpeedOf(v)
+  const a = v.mu * G
+  if (a <= 0 || u <= 0) return 0
+  const tt = Math.min(t, u / a)
+  return u * tt - 0.5 * a * tt * tt
+}
+
+export function poseAt(v, t) {
+  if (t < 0) {
+    const d = preBackDist(v, -t)
+    const [dx, dz] = bearingToVec(v.heading)
+    return { x: v.x - dx * d, z: v.z - dz * d, bearing: v.heading }
+  }
+  if (t > 0) {
+    const d = postAlongDist(v, t)
+    const [dx, dz] = bearingToVec(v.postDir)
+    return { x: v.x + dx * d, z: v.z + dz * d, bearing: v.heading }
+  }
+  return { x: v.x, z: v.z, bearing: v.heading }
+}
+
+// ---- whole-case analysis --------------------------------------------------------------
+
+export function analyzeVehicle(v, { grade = 0, eff = 1 } = {}) {
+  const spec = CATALOG[v.type]
+  const skidMin = skidSpeed(v.skid, v.mu, grade, eff)
+  const vi = kmh2ms(v.speed)
+  const startOfSkid = v.skid > 0 ? Math.sqrt(vi * vi + 2 * (v.mu * eff + grade / 100) * G * v.skid) : vi
+  const dims = crushDims(spec)
+  const C = spec.noCrush ? 0 : crushDepth(dims.Leff, v.crush)
+  return {
+    id: v.id,
+    skidSpeed: skidMin, // m/s: speed lost in the skid alone (minimum speed at start of skid)
+    startOfSkid,
+    postSpeed: postSpeedOf(v),
+    crushDepth: C,
+    ebs: crushEBS(C),
+  }
+}
+
+export function resolvePair(vehicles, pair) {
+  const movers = vehicles
+  const a = movers.find((v) => v.id === pair?.[0]) ?? movers[0]
+  const b = movers.find((v) => v.id === pair?.[1] && v !== a) ?? movers.find((v) => v !== a)
+  return a && b ? [a, b] : null
+}
+
+export function analyzeCase(vehicles, settings) {
+  const per = vehicles.map((v) => analyzeVehicle(v, settings))
+  const pairV = resolvePair(vehicles, settings.pair)
+  let pair = null
+  if (pairV) {
+    const [A, B] = pairV
+    const velA = velOf(kmh2ms(A.speed), A.heading)
+    const velB = velOf(kmh2ms(B.speed), B.heading)
+    let n
+    if (settings.normalDeg != null) n = bearingToVec(settings.normalDeg)
+    else {
+      const dx = B.x - A.x, dz = B.z - A.z
+      const d = Math.hypot(dx, dz)
+      n = d > 0.1 ? [dx / d, dz / d] : bearingToVec(A.heading)
+    }
+    const forward = forwardImpact(
+      { mass: A.mass, vel: velA },
+      { mass: B.mass, vel: velB },
+      { e: settings.e, n },
+    )
+    const reverse = reverseMomentum(
+      { mass: A.mass, dir: bearingToVec(A.heading), post: velOf(postSpeedOf(A), A.postDir) },
+      { mass: B.mass, dir: bearingToVec(B.heading), post: velOf(postSpeedOf(B), B.postDir) },
+    )
+    pair = { A, B, n, normalBearing: vecToBearing(n[0], n[1]), forward, reverse }
+  }
+  return { per, pair }
+}
+
+
+
+==========================================================================================
+FILE: src/store.js
+==========================================================================================
+import { create } from 'zustand'
+import { fetchOsm } from './lib/overpass.js'
+import { fetchElevation, makeFlatSampler, gradeAt } from './lib/elevation.js'
+import { CATALOG, speedFor } from './lib/catalog.js'
+import { wrap360 } from './lib/geo.js'
+
+const uid = () => Math.random().toString(36).slice(2, 8)
+let loadToken = 0
+
+export const DEFAULT_ENV = {
+  hour: 14.5, weather: 'clear', visibility: 600, greenery: 0.6,
+}
+export const DEFAULT_LAYERS = {
+  buildings: true, trees: true, grid: true, labels: true, paths: true, skids: true, terrain: true,
+}
+
+export const MARKER_KINDS = {
+  debris: 'Debris', gouge: 'Gouge mark', yaw: 'Yaw mark', rest: 'Rest position',
+  witness: 'Witness', glass: 'Broken glass', fluid: 'Fluid leak', photo: 'Photo point', other: 'Other',
+}
+
+export function makeVehicle(type, index = 0, over = {}) {
+  const s = CATALOG[type]
+  const heading = [0, 90, 180, 270][index % 4]
+  return {
+    id: uid(),
+    type,
+    name: `V${index + 1}`,
+    color: s.color,
+    x: index === 0 ? 0 : (index % 2 ? 1 : -1) * (5 + index * 2),
+    z: index === 0 ? 0 : 0,
+    heading,
+    crush: 0,
+    impactOffset: 0,
+    mass: s.mass,
+    speed: speedFor(type),
+    skid: 0,
+    mu: 0.7,
+    postDist: 0,
+    postDir: heading,
+    ...over,
+  }
+}
+
+export const useStore = create((set, get) => ({
+  // ---- navigation
+  view: 'map',
+  setView: (view) => set({ view }),
+  tab: 'scene',
+  setTab: (tab) => set({ tab }),
+  mapView: { center: [23.0225, 72.5714], zoom: 13 },
+
+  // ---- location + OSM
+  location: null,
+  radius: 800,
+  setRadius: (radius) => set({ radius }),
+  setLocation: (loc) => set((s) => ({ location: { ...s.location, ...loc } })),
+  osm: { status: 'idle', data: null, error: null, note: '', loadedKey: null, origin: null },
+  worldStats: null,
+  sceneId: 0,
+
+  // ---- terrain (elevation sampler; not persisted, not serialized)
+  terrain: makeFlatSampler(),
+  terrainStatus: 'idle', // idle | loading | ready | unavailable
+  heightAt: (x, z) => get().terrain(x, z),
+  gradeAt: (x, z, bearing) => gradeAt(get().terrain, x, z, bearing),
+
+  loadOsm: async ({ preserve = false } = {}) => {
+    const { location, radius } = get()
+    if (!location) return
+    const token = ++loadToken
+    const key = `${location.lat.toFixed(5)},${location.lon.toFixed(5)},${radius}`
+    set((s) => ({ osm: { ...s.osm, status: 'loading', error: null, note: 'Contacting Overpass…' } }))
+    try {
+      const { json, mirror, cached } = await fetchOsm(location.lat, location.lon, radius, {
+        onStatus: (note) => token === loadToken && set((s) => ({ osm: { ...s.osm, note } })),
+      })
+      if (token !== loadToken) return
+      const changed = get().osm.loadedKey !== key
+      set((s) => ({
+        osm: { status: 'ready', data: json, error: null, note: '', mirror, cached, loadedKey: key, origin: { lat: location.lat, lon: location.lon, radius } },
+        sceneId: s.sceneId + 1,
+        view: 'scene',
+        tab: s.tab === 'scene' && changed ? 'vehicles' : s.tab,
+        ...(changed && !preserve ? { vehicles: [], selectedId: null, markers: [], time: 0, playing: false } : {}),
+      }))
+
+      // Terrain is best-effort and loads independently of OSM geometry —
+      // a slow or failed elevation fetch never blocks the 3D scene.
+      set({ terrainStatus: 'loading' })
+      fetchElevation(location.lat, location.lon, radius).then((sampler) => {
+        if (token !== loadToken) return
+        set({ terrain: sampler, terrainStatus: sampler.available ? 'ready' : 'unavailable' })
+      })
+      } catch (e) {
+      if (token !== loadToken) return
+      set((s) => ({ osm: { ...s.osm, status: 'error', error: String(e.message || e), note: '' } }))
+    }
+  },
+  cancelLoad: () => { loadToken++; set((s) => ({ osm: { ...s.osm, status: s.osm.data ? 'ready' : 'idle', note: '' } })) },
+
+  // Loads a scene from Overpass JSON the user obtained themselves (e.g. ran
+  // the query on overpass-turbo.eu and pasted/uploaded the result) — a
+  // manual path that works regardless of whether any mirror is reachable
+  // from this app right now.
+  loadOsmFromJson: (json) => {
+    const { location, radius } = get()
+    if (!location) return
+    if (!json || !Array.isArray(json.elements)) {
+      set((s) => ({ osm: { ...s.osm, status: 'error', error: 'That doesn\'t look like Overpass JSON — expected an "elements" array.', note: '' } }))
+      return
+    }
+    const token = ++loadToken // cancel any in-flight network fetch
+    const key = `${location.lat.toFixed(5)},${location.lon.toFixed(5)},${radius}`
+    const changed = get().osm.loadedKey !== key
+    set((s) => ({
+      osm: { status: 'ready', data: json, error: null, note: '', mirror: 'manual import', cached: false, loadedKey: key, origin: { lat: location.lat, lon: location.lon, radius } },
+      sceneId: s.sceneId + 1,
+      view: 'scene',
+      tab: s.tab === 'scene' && changed ? 'vehicles' : s.tab,
+      ...(changed ? { vehicles: [], selectedId: null, markers: [], time: 0, playing: false } : {}),
+    }))
+    set({ terrainStatus: 'loading' })
+    fetchElevation(location.lat, location.lon, radius).then((sampler) => {
+      if (token !== loadToken) return
+      set({ terrain: sampler, terrainStatus: sampler.available ? 'ready' : 'unavailable' })
+    })
+  },
+  
+  // ---- scene settings
+  env: DEFAULT_ENV,
+  setEnv: (p) => set((s) => ({ env: { ...s.env, ...p } })),
+  layers: DEFAULT_LAYERS,
+  toggleLayer: (k) => set((s) => ({ layers: { ...s.layers, [k]: !s.layers[k] } })),
+  cameraMode: 'orbit',
+  setCameraMode: (cameraMode) => set({ cameraMode }),
+
+  // ---- vehicles
+  vehicles: [],
+  selectedId: null,
+  gizmo: 'translate',
+  setGizmo: (gizmo) => set({ gizmo }),
+  select: (selectedId) => set({ selectedId }),
+  addVehicle: (type) => {
+    const vs = get().vehicles
+    const v = makeVehicle(type, vs.length, { name: `V${vs.length + 1}` })
+    set({ vehicles: [...vs, v], selectedId: v.id, tab: 'vehicles' })
+  },
+  updateVehicle: (id, patch) => set((s) => ({ vehicles: s.vehicles.map((v) => (v.id === id ? { ...v, ...patch } : v)) })),
+  changeType: (id, type) => {
+    const s = CATALOG[type]
+    get().updateVehicle(id, { type, color: s.color, mass: s.mass, crush: s.noCrush ? 0 : get().vehicles.find((v) => v.id === id)?.crush ?? 0 })
+  },
+  removeVehicle: (id) => set((s) => ({ vehicles: s.vehicles.filter((v) => v.id !== id), selectedId: s.selectedId === id ? null : s.selectedId })),
+  duplicateVehicle: (id) => {
+    const src = get().vehicles.find((v) => v.id === id)
+    if (!src) return
+    const n = get().vehicles.length
+    const v = { ...src, id: uid(), name: `V${n + 1}`, x: src.x + 4, z: src.z + 3 }
+    set((s) => ({ vehicles: [...s.vehicles, v], selectedId: v.id }))
+  },
+  nudgeHeading: (id, d) => get().updateVehicle(id, { heading: wrap360((get().vehicles.find((v) => v.id === id)?.heading ?? 0) + d) }),
+
+  // ---- evidence markers
+  markers: [],
+  placing: null, // marker kind currently being placed, or null
+  setPlacing: (placing) => set({ placing, tool: placing ? 'marker' : get().tool === 'marker' ? 'select' : get().tool }),
+  addMarker: (kind, x, z) => set((s) => ({
+    markers: [...s.markers, { id: uid(), kind, x, z, n: s.markers.length + 1, note: '', photo: null }],
+  })),
+  updateMarker: (id, p) => set((s) => ({ markers: s.markers.map((m) => (m.id === id ? { ...m, ...p } : m)) })),
+  removeMarker: (id) => set((s) => ({
+    markers: s.markers.filter((m) => m.id !== id).map((m, i) => ({ ...m, n: i + 1 })),
+  })),
+
+  // ---- measuring ruler
+  tool: 'select', // 'select' | 'marker' | 'ruler'
+  ruler: [], // 0, 1, or 2 {x,z} points
+  setTool: (tool) => set({ tool, placing: tool === 'marker' ? get().placing : null, ruler: [] }),
+  addRulerPoint: (x, z) => set((s) => {
+    if (s.ruler.length >= 2) return { ruler: [{ x, z }] }
+    return { ruler: [...s.ruler, { x, z }] }
+  }),
+  clearRuler: () => set({ ruler: [] }),
+
+  // ---- physics settings
+  physics: { pair: null, e: 0.25, normalDeg: null, grade: 0, eff: 1 },
+  setPhysics: (p) => set((s) => ({ physics: { ...s.physics, ...p } })),
+
+  // ---- playback
+  time: 0,
+  playing: false,
+  rate: 1,
+  tMin: -4,
+  tMax: 5,
+  setTime: (time) => set({ time, playing: false }),
+  setPlaying: (playing) => set((s) => ({ playing, time: playing && s.time >= s.tMax ? s.tMin : s.time })),
+  setRate: (rate) => set({ rate }),
+
+  // ---- case file
+  caseInfo: { number: '', investigator: '', notes: '' },
+  setCaseInfo: (p) => set((s) => ({ caseInfo: { ...s.caseInfo, ...p } })),
+
+  // ---- bridge to the WebGL canvas (set by <Bridge/> inside the Canvas)
+  snapshotFn: null,
+  screenshotFn: null,
+
+  // ---- persistence
+  serialize: () => {
+    const s = get()
+    return {
+      version: 1,
+      location: s.location, radius: s.radius,
+      vehicles: s.vehicles, markers: s.markers,
+      env: s.env, layers: s.layers, caseInfo: s.caseInfo, physics: s.physics,
+    }
+  },
+  restore: (d) => {
+    set({
+      location: d.location, radius: d.radius ?? 800,
+      vehicles: d.vehicles ?? [], markers: d.markers ?? [],
+      env: { ...DEFAULT_ENV, ...d.env }, layers: { ...DEFAULT_LAYERS, ...d.layers },
+      caseInfo: d.caseInfo ?? { number: '', investigator: '', notes: '' },
+      physics: { pair: null, e: 0.25, normalDeg: null, grade: 0, eff: 1, ...d.physics },
+      selectedId: null, time: 0, playing: false, tool: 'select', ruler: [],
+    })
+    return get().loadOsm({ preserve: true })
+  },
+}))

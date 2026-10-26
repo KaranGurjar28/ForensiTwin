@@ -4,6 +4,7 @@ import * as THREE from 'three'
 import { useStore } from '../store.js'
 import World from './World.jsx'
 import Vehicle from './Vehicle.jsx'
+import SceneObject from './SceneObject.jsx'
 import Overlays from './Overlays.jsx'
 import Environment from './Environment.jsx'
 import CameraRig from './CameraRig.jsx'
@@ -11,6 +12,7 @@ import Snapshot from './Snapshot.jsx'
 
 export default function Scene() {
   const vehicles = useStore((s) => s.vehicles)
+  const objects = useStore((s) => s.objects)
   const sceneId = useStore((s) => s.sceneId)
   const cameraMode = useStore((s) => s.cameraMode)
 
@@ -29,6 +31,9 @@ export default function Scene() {
         <World />
         {vehicles.map((v) => (
           <Vehicle key={v.id} v={v} />
+        ))}
+        {objects.map((v) => (
+          <SceneObject key={v.id} v={v} />
         ))}
       </Suspense>
       <Overlays />
