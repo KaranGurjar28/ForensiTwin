@@ -132,6 +132,38 @@ function buildMoto() {
   ]
 }
 
+
+function rodBetween(a, b, radius, mat) {
+  const va = new THREE.Vector3(...a), vb = new THREE.Vector3(...b)
+  const delta = vb.clone().sub(va)
+  const geo = new THREE.CylinderGeometry(radius, radius, delta.length(), 8)
+  geo.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), delta.clone().normalize())
+  geo.translate(...va.clone().add(vb).multiplyScalar(0.5).toArray())
+  return P(geo, mat, false)
+}
+
+function buildBicycle(s) {
+  const wheelRadius = 0.32
+  const rear = [0, wheelRadius, -0.62]
+  const front = [0, wheelRadius, 0.62]
+  const crank = [0, 0.34, -0.02]
+  const seat = [0, 0.82, -0.28]
+  const head = [0, 0.76, 0.36]
+  return [
+    P(new THREE.TorusGeometry(wheelRadius, 0.035, 8, 20).rotateY(Math.PI / 2).translate(...rear), 'dark', false),
+    P(new THREE.TorusGeometry(wheelRadius, 0.035, 8, 20).rotateY(Math.PI / 2).translate(...front), 'dark', false),
+    rodBetween(rear, crank, 0.025, 'accent'),
+    rodBetween(crank, front, 0.025, 'accent'),
+    rodBetween(rear, seat, 0.025, 'accent'),
+    rodBetween(seat, head, 0.025, 'accent'),
+    rodBetween(head, crank, 0.025, 'accent'),
+    rodBetween(seat, [0, 0.85, -0.48], 0.035, 'dark'),
+    rodBetween(head, [0, 1.02, 0.42], 0.025, 'dark'),
+    P(new THREE.BoxGeometry(0.24, 0.06, 0.08).translate(0, 0.87, -0.5), 'dark', false),
+    P(new THREE.BoxGeometry(0.38, 0.035, 0.05).translate(0, 1.02, 0.42), 'dark', false),
+  ]
+}
+
 function buildPerson() {
   return [
     P(box(0.14, 0.85, 0.16, -0.1, 0.425, 0, [1, 1, 1]), 'dark', false),
@@ -151,6 +183,7 @@ export function buildProcedural(type) {
     case 'rickshaw': parts = buildRickshaw(s); break
     case 'moto': parts = buildMoto(s); break
     case 'person': parts = buildPerson(s); break
+    case 'bicycle': parts = buildBicycle(s); break
     default: parts = buildCar(s)
   }
   for (const p of parts) p.orig = p.geo.attributes.position.array.slice()
