@@ -15,8 +15,24 @@ export const DEFAULT_LAYERS = {
 }
 
 export const MARKER_KINDS = {
-  debris: 'Debris', gouge: 'Gouge mark', yaw: 'Yaw mark', rest: 'Rest position',
-  witness: 'Witness', glass: 'Broken glass', fluid: 'Fluid leak', photo: 'Photo point', other: 'Other',
+  debris: 'Debris / fragments',
+  gouge: 'Gouge mark',
+  yaw: 'Yaw mark',
+  scrub: 'Scrub / tyre skip mark',
+  skid: 'Skid mark',
+  tyre: 'Tyre print',
+  paint: 'Paint chip / transfer',
+  blood: 'Blood / biological sample',
+  fibre: 'Fibre evidence',
+  hair: 'Hair evidence',
+  glass: 'Broken glass',
+  fluid: 'Fluid leak',
+  impact: 'Point of impact',
+  rest: 'Final rest position',
+  witness: 'Witness location',
+  cctv: 'CCTV / camera location',
+  photo: 'Photo point',
+  other: 'Other evidence',
 }
 
 export function makeVehicle(type, index = 0, over = {}) {
@@ -85,7 +101,7 @@ export const useStore = create((set, get) => ({
         sceneId: s.sceneId + 1,
         view: 'scene',
         tab: s.tab === 'scene' && changed ? 'vehicles' : s.tab,
-        ...(changed && !preserve ? { vehicles: [], objects: [], selectedId: null, markers: [], time: 0, playing: false } : {}),
+        ...(changed && !preserve ? { vehicles: [], objects: [], selectedId: null, markers: [], evidenceAssessment: {}, time: 0, playing: false } : {}),
       }))
 
       // Terrain is best-effort and loads independently of OSM geometry —
@@ -121,7 +137,7 @@ export const useStore = create((set, get) => ({
       sceneId: s.sceneId + 1,
       view: 'scene',
       tab: s.tab === 'scene' && changed ? 'vehicles' : s.tab,
-      ...(changed ? { vehicles: [], objects: [], selectedId: null, markers: [], time: 0, playing: false } : {}),
+      ...(changed ? { vehicles: [], objects: [], selectedId: null, markers: [], evidenceAssessment: {}, time: 0, playing: false } : {}),
     }))
     set({ terrainStatus: 'loading' })
     fetchElevation(location.lat, location.lon, radius).then((sampler) => {
@@ -232,6 +248,16 @@ export const useStore = create((set, get) => ({
     markers: s.markers.filter((m) => m.id !== id).map((m, i) => ({ ...m, n: i + 1 })),
   })),
 
+  // ---- structured accident evidence assessment
+  evidenceAssessment: {},
+  updateEvidenceField: (fieldId, entry) => set((s) => ({
+    evidenceAssessment: {
+      ...s.evidenceAssessment,
+      [fieldId]: { status: 'unknown', value: '', notes: '', ...(s.evidenceAssessment?.[fieldId] || {}), ...entry },
+    },
+  })),
+  setEvidenceAssessment: (evidenceAssessment) => set({ evidenceAssessment: evidenceAssessment || {} }),
+
   // ---- measuring ruler
   tool: 'select', // 'select' | 'marker' | 'ruler'
   ruler: [], // 0, 1, or 2 {x,z} points
@@ -243,7 +269,7 @@ export const useStore = create((set, get) => ({
   clearRuler: () => set({ ruler: [] }),
 
   // ---- physics settings
-  physics: { pair: null, e: 0.25, normalDeg: null, grade: 0, eff: 1 },
+  physics: { pair: null, e: 0.25, normalDeg: null, grade: 0, eff: 1, collisionType: 'vehicle_vehicle_head_on', collisionTargetKind: 'vehicle', collisionTargetId: '', primaryVehicleId: '', impactAngleDeg: 0, impactSequence: 'primary' },
   setPhysics: (p) => set((s) => ({ physics: { ...s.physics, ...p } })),
 
   // ---- playback
@@ -271,7 +297,7 @@ export const useStore = create((set, get) => ({
       version: 1,
       location: s.location, radius: s.radius,
       vehicles: s.vehicles, objects: s.objects, markers: s.markers,
-      env: s.env, layers: s.layers, caseInfo: s.caseInfo, physics: s.physics,
+      env: s.env, layers: s.layers, caseInfo: s.caseInfo, physics: s.physics, evidenceAssessment: s.evidenceAssessment,
     }
   },
   restore: (d) => {
@@ -282,10 +308,10 @@ export const useStore = create((set, get) => ({
       location: d.location, radius: d.radius ?? 800,
       vehicles: savedVehicles,
       objects: [...(d.objects ?? []), ...legacyObjects],
-      markers: d.markers ?? [],
+      markers: d.markers ?? [], evidenceAssessment: d.evidenceAssessment ?? {},
       env: { ...DEFAULT_ENV, ...d.env }, layers: { ...DEFAULT_LAYERS, ...d.layers },
       caseInfo: d.caseInfo ?? { number: '', investigator: '', notes: '' },
-      physics: { pair: null, e: 0.25, normalDeg: null, grade: 0, eff: 1, ...d.physics },
+      physics: { pair: null, e: 0.25, normalDeg: null, grade: 0, eff: 1, collisionType: 'vehicle_vehicle_head_on', collisionTargetKind: 'vehicle', collisionTargetId: '', primaryVehicleId: '', impactAngleDeg: 0, impactSequence: 'primary', ...d.physics },
       selectedId: null, time: 0, playing: false, tool: 'select', ruler: [],
     })
     return get().loadOsm({ preserve: true })
