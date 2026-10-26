@@ -140,8 +140,11 @@ export function resolvePair(vehicles, pair) {
 }
 
 export function analyzeCase(vehicles, settings) {
-  const per = vehicles.map((v) => analyzeVehicle(v, settings))
-  const pairV = resolvePair(vehicles, settings.pair)
+  // Scene objects share the case collection for save/load and editing, but only
+  // road vehicles participate in vehicle physics calculations.
+  const movers = vehicles.filter((v) => CATALOG[v.type]?.category === 'vehicle')
+  const per = movers.map((v) => analyzeVehicle(v, settings))
+  const pairV = resolvePair(movers, settings.pair)
   let pair = null
   if (pairV) {
     const [A, B] = pairV
