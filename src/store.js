@@ -27,6 +27,9 @@ export function makeVehicle(type, index = 0, over = {}) {
     type,
     name: `V${index + 1}`,
     color: s.color,
+    licensePlate: '',
+    vin: '',
+    speedometerKmh: '',
     x: index === 0 ? 0 : (index % 2 ? 1 : -1) * (5 + index * 2),
     z: index === 0 ? 0 : 0,
     heading,
@@ -82,7 +85,7 @@ export const useStore = create((set, get) => ({
         sceneId: s.sceneId + 1,
         view: 'scene',
         tab: s.tab === 'scene' && changed ? 'vehicles' : s.tab,
-        ...(changed && !preserve ? { vehicles: [], selectedId: null, markers: [], time: 0, playing: false } : {}),
+        ...(changed && !preserve ? { vehicles: [], objects: [], selectedId: null, markers: [], time: 0, playing: false } : {}),
       }))
 
       // Terrain is best-effort and loads independently of OSM geometry —
@@ -118,7 +121,7 @@ export const useStore = create((set, get) => ({
       sceneId: s.sceneId + 1,
       view: 'scene',
       tab: s.tab === 'scene' && changed ? 'vehicles' : s.tab,
-      ...(changed ? { vehicles: [], selectedId: null, markers: [], time: 0, playing: false } : {}),
+      ...(changed ? { vehicles: [], objects: [], selectedId: null, markers: [], time: 0, playing: false } : {}),
     }))
     set({ terrainStatus: 'loading' })
     fetchElevation(location.lat, location.lon, radius).then((sampler) => {
@@ -135,31 +138,87 @@ export const useStore = create((set, get) => ({
   cameraMode: 'orbit',
   setCameraMode: (cameraMode) => set({ cameraMode }),
 
-  // ---- vehicles
+  // ---- road vehicles and non-vehicle scene objects
   vehicles: [],
+  objects: [],
   selectedId: null,
   gizmo: 'translate',
   setGizmo: (gizmo) => set({ gizmo }),
   select: (selectedId) => set({ selectedId }),
+
   addVehicle: (type) => {
+    const spec = CATALOG[type]
+    if (!spec || spec.category !== 'vehicle') return
     const vs = get().vehicles
-    const v = makeVehicle(type, vs.length, { name: `V${vs.length + 1}` })
+    const v = makeVehicle(type, vs.length + get().objects.length, {
+      name: `V${vs.length + 1}`,
+      licensePlate: '',
+      vin: '',
+      speedometerKmh: '',
+    })
     set({ vehicles: [...vs, v], selectedId: v.id, tab: 'vehicles' })
   },
   updateVehicle: (id, patch) => set((s) => ({ vehicles: s.vehicles.map((v) => (v.id === id ? { ...v, ...patch } : v)) })),
   changeType: (id, type) => {
-    const s = CATALOG[type]
-    get().updateVehicle(id, { type, color: s.color, mass: s.mass, crush: s.noCrush ? 0 : get().vehicles.find((v) => v.id === id)?.crush ?? 0 })
+    const spec = CATALOG[type]
+    const current = get().vehicles.find((v) => v.id === id)
+    if (!spec || spec.category !== 'vehicle' || !current) return
+    get().updateVehicle(id, {
+      type, color: spec.color, mass: spec.mass,
+      speed: current.speed ?? speedFor(type),
+      crush: spec.noCrush ? 0 : current.crush ?? 0,
+      licensePlate: current.licensePlate ?? '',
+      vin: current.vin ?? '',
+      speedometerKmh: current.speedometerKmh ?? '',
+    })
   },
   removeVehicle: (id) => set((s) => ({ vehicles: s.vehicles.filter((v) => v.id !== id), selectedId: s.selectedId === id ? null : s.selectedId })),
   duplicateVehicle: (id) => {
     const src = get().vehicles.find((v) => v.id === id)
     if (!src) return
-    const n = get().vehicles.length
-    const v = { ...src, id: uid(), name: `V${n + 1}`, x: src.x + 4, z: src.z + 3 }
+    const n = get().vehicles.length + 1
+    const v = {
+      ...src, id: uid(), name: `V${n}`,
+      // Identity values are never copied to a duplicate.
+      licensePlate: '', vin: '', speedometerKmh: '',
+      x: src.x + 4, z: src.z + 3,
+    }
     set((s) => ({ vehicles: [...s.vehicles, v], selectedId: v.id }))
   },
-  nudgeHeading: (id, d) => get().updateVehicle(id, { heading: wrap360((get().vehicles.find((v) => v.id === id)?.heading ?? 0) + d) }),
+
+  addObject: (type) => {
+    const spec = CATALOG[type]
+    if (!spec || spec.category === 'vehicle') return
+    const objects = get().objects
+    const count = objects.filter((item) => item.type === type).length + 1
+    const v = makeVehicle(type, objects.length + get().vehicles.length, {
+      name: `${spec.label} ${count}`,
+      speed: 0, skid: 0, postDist: 0, mass: 0,
+      crush: 0, licensePlate: '', vin: '', speedometerKmh: '',
+    })
+    set({ objects: [...objects, v], selectedId: v.id, tab: 'vehicles' })
+  },
+  updateObject: (id, patch) => set((s) => ({ objects: s.objects.map((v) => (v.id === id ? { ...v, ...patch } : v)) })),
+  changeObjectType: (id, type) => {
+    const spec = CATALOG[type]
+    const current = get().objects.find((v) => v.id === id)
+    if (!spec || spec.category === 'vehicle' || !current) return
+    get().updateObject(id, { type, color: spec.color, mass: 0, speed: 0, skid: 0, postDist: 0, crush: 0 })
+  },
+  removeObject: (id) => set((s) => ({ objects: s.objects.filter((v) => v.id !== id), selectedId: s.selectedId === id ? null : s.selectedId })),
+  duplicateObject: (id) => {
+    const src = get().objects.find((v) => v.id === id)
+    if (!src) return
+    const n = get().objects.filter((item) => item.type === src.type).length + 1
+    const v = { ...src, id: uid(), name: `${CATALOG[src.type]?.label ?? 'Object'} ${n}`, x: src.x + 2, z: src.z + 2 }
+    set((s) => ({ objects: [...s.objects, v], selectedId: v.id }))
+  },
+  nudgeHeading: (id, d) => {
+    const vehicle = get().vehicles.find((v) => v.id === id)
+    if (vehicle) return get().updateVehicle(id, { heading: wrap360(vehicle.heading + d) })
+    const object = get().objects.find((v) => v.id === id)
+    if (object) return get().updateObject(id, { heading: wrap360(object.heading + d) })
+  },
 
   // ---- evidence markers
   markers: [],
@@ -211,14 +270,19 @@ export const useStore = create((set, get) => ({
     return {
       version: 1,
       location: s.location, radius: s.radius,
-      vehicles: s.vehicles, markers: s.markers,
+      vehicles: s.vehicles, objects: s.objects, markers: s.markers,
       env: s.env, layers: s.layers, caseInfo: s.caseInfo, physics: s.physics,
     }
   },
   restore: (d) => {
+    const savedItems = d.vehicles ?? []
+    const legacyObjects = savedItems.filter((item) => CATALOG[item.type]?.category !== 'vehicle')
+    const savedVehicles = savedItems.filter((item) => CATALOG[item.type]?.category === 'vehicle')
     set({
       location: d.location, radius: d.radius ?? 800,
-      vehicles: d.vehicles ?? [], markers: d.markers ?? [],
+      vehicles: savedVehicles,
+      objects: [...(d.objects ?? []), ...legacyObjects],
+      markers: d.markers ?? [],
       env: { ...DEFAULT_ENV, ...d.env }, layers: { ...DEFAULT_LAYERS, ...d.layers },
       caseInfo: d.caseInfo ?? { number: '', investigator: '', notes: '' },
       physics: { pair: null, e: 0.25, normalDeg: null, grade: 0, eff: 1, ...d.physics },
