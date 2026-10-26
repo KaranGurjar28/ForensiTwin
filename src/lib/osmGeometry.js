@@ -18,7 +18,7 @@ const ROAD = {
 
 const WALLS = ['#c9b8a3', '#b8a99a', '#d6cfc4', '#a89f91', '#cbbfae', '#9aa3a8', '#c2a48a', '#b5b0a6', '#d8c7b0']
 const CAR_COLORS = ['#c43b3b', '#3b6fc4', '#d8d8d8', '#2e2e2e', '#c4a33b', '#5a8f5a', '#8a8f99']
-const LAYER_Y = { shoulder: 0.02, road: 0.04, mark: 0.06 }
+const LAYER_Y = { shoulder: 0.06, road: 0.12, mark: 0.18 }
 
 // ---------------------------------------------------------------- parsing
 
@@ -103,6 +103,7 @@ function addRibbon(acc, pts, width, y) {
   if (pts.length < 2) return
   const hw = width / 2
   const base = acc.pos.length / 3
+  const yAt = typeof y === 'function' ? y : () => y
   for (let i = 0; i < pts.length; i++) {
     const a = pts[Math.max(0, i - 1)]
     const b = pts[Math.min(pts.length - 1, i + 1)]
@@ -110,7 +111,10 @@ function addRibbon(acc, pts, width, y) {
     const l = Math.hypot(tx, tz) || 1
     tx /= l; tz /= l
     const nx = -tz, nz = tx
-    acc.pos.push(pts[i][0] - nx * hw, y, pts[i][1] - nz * hw, pts[i][0] + nx * hw, y, pts[i][1] + nz * hw)
+    const px = pts[i][0], pz = pts[i][1]
+    const y0 = yAt(px - nx * hw, pz - nz * hw)
+    const y1 = yAt(px + nx * hw, pz + nz * hw)
+    acc.pos.push(px - nx * hw, y0, pz - nz * hw, px + nx * hw, y1, pz + nz * hw)
     if (i > 0) {
       const k = base + (i - 1) * 2
       acc.idx.push(k, k + 1, k + 2, k + 1, k + 3, k + 2)
@@ -120,6 +124,7 @@ function addRibbon(acc, pts, width, y) {
 
 // crosswalk zebra stripes: short ribbon segments across the road, alternating gaps
 function addCrosswalk(acc, cx, cz, tx, tz, halfSpan, y) {
+  const yAt = typeof y === 'function' ? y : () => y
   const nx = -tz, nz = tx
   const stripeLen = 1.1, gap = 0.9, stripeW = halfSpan * 2 - 0.6
   let s = -halfSpan + stripeLen / 2
@@ -129,7 +134,10 @@ function addCrosswalk(acc, cx, cz, tx, tz, halfSpan, y) {
     const hw = stripeW / 2
     const base = acc.pos.length / 3
     for (const [px, pz] of [[c0x, c0z], [c1x, c1z]]) {
-      acc.pos.push(px - tx * hw, y, pz - tz * hw, px + tx * hw, y, pz + tz * hw)
+      acc.pos.push(
+        px - tx * hw, yAt(px - tx * hw, pz - tz * hw), pz - tz * hw,
+        px + tx * hw, yAt(px + tx * hw, pz + tz * hw), pz + tz * hw,
+      )
     }
     acc.idx.push(base, base + 1, base + 2, base + 1, base + 3, base + 2)
     s += stripeLen + gap
@@ -249,7 +257,7 @@ function findIntersections(lines, { sampleSpacing = 10, mergeRadius = 14, maxCou
 
 // ---------------------------------------------------------------- main builder
 
-export function buildWorld(json, { lat, lon }, { radius = 800 } = {}) {
+export function buildWorld(json, { lat, lon }, { radius = 800, heightAt = () => 0 } = {}) {
   const proj = makeProjector(lat, lon)
   const { roads, buildings } = parseOsm(json, proj, radius)
 
@@ -264,11 +272,16 @@ export function buildWorld(json, { lat, lon }, { radius = 800 } = {}) {
     const sm = smoothLine(r.pts, 2)
     if (!sm) continue
     const rankLift = r.rank * 0.0005
-    addRibbon(shoulder, sm, r.width + 1.6, LAYER_Y.shoulder)
-    addRibbon(asphalt, sm, r.width, LAYER_Y.road + rankLift)
+    // Conform each road layer to the same elevation sampler as the terrain.
+    // This prevents the ground mesh from overtaking flat road ribbons on slopes.
+    const shoulderY = (x, z) => heightAt(x, z) + LAYER_Y.shoulder
+    const roadY = (x, z) => heightAt(x, z) + LAYER_Y.road + rankLift
+    const markY = (x, z) => heightAt(x, z) + LAYER_Y.mark
+    addRibbon(shoulder, sm, r.width + 1.6, shoulderY)
+    addRibbon(asphalt, sm, r.width, roadY)
     if (!r.oneway && r.width >= 6 && r.rank >= 2) {
       // dashed centre line, trimmed near the ends so it does not run through junctions
-      for (let s = 3; s + 2 < sm.length - 3; s += 5) addRibbon(marks, sm.slice(s, s + 3), 0.16, LAYER_Y.mark)
+      for (let s = 3; s + 2 < sm.length - 3; s += 5) addRibbon(marks, sm.slice(s, s + 3), 0.16, markY)
     }
     const line = { id: r.id, pts: sm, hw: r.width / 2, rank: r.rank }
     lines.push(line)
@@ -282,7 +295,7 @@ export function buildWorld(json, { lat, lon }, { radius = 800 } = {}) {
   // for a stop-sign post per junction (rendered as instances in World.jsx)
   const intersections = findIntersections(lines)
   for (const n of intersections) {
-    addCrosswalk(crosswalks, n.x, n.z, n.tx, n.tz, n.hw + 1.2, LAYER_Y.mark + 0.002)
+    addCrosswalk(crosswalks, n.x, n.z, n.tx, n.tz, n.hw + 1.2, (x, z) => heightAt(x, z) + LAYER_Y.mark + 0.002)
   }
 
   // --- buildings
