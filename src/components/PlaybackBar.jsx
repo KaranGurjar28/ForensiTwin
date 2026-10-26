@@ -29,20 +29,21 @@ export default function PlaybackBar() {
   }, [playing])
 
   if (!vehicles.length) return null
-  const hasMotion = vehicles.some((v) => v.speed > 0 || v.postDist > 0)
+  const hasMotion = vehicles.some((v) => v.speed > 0 || v.postDist > 0) || useStore.getState().physics?.collisionType
   if (!hasMotion) return null
 
   const pct = ((time - tMin) / (tMax - tMin)) * 100
 
   return (
     <div className="ft-playbar">
-      <button className="ft-playbtn" onClick={() => useStore.getState().setPlaying(!playing)}>
+      <button className="ft-playbtn" title={playing ? 'Pause reconstruction' : 'Play reconstruction'} onClick={() => useStore.getState().setPlaying(!playing)}>
         {playing ? (
           <svg width="16" height="16" viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14" fill="currentColor" /><rect x="14" y="5" width="4" height="14" fill="currentColor" /></svg>
         ) : (
           <svg width="16" height="16" viewBox="0 0 24 24"><path d="M7 5v14l12-7z" fill="currentColor" /></svg>
         )}
       </button>
+      <button className="ft-playbtn ft-replaybtn" title="Replay from pre-impact approach" onClick={() => { const st = useStore.getState(); st.setTime(st.tMin); st.setPlaying(true) }}>↺</button>
       <div className="ft-playtrack">
         <div className="ft-playfill" style={{ width: `${pct}%` }} />
         <div className="ft-playzero" style={{ left: `${((0 - tMin) / (tMax - tMin)) * 100}%` }} />
