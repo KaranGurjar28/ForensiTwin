@@ -30,7 +30,8 @@ export default function CameraRig() {
   useFrame(() => {
     if (mode !== 'driver' && mode !== 'witness') return
     const st = useStore.getState()
-    const v = st.vehicles.find((v) => v.id === st.selectedId) ?? st.vehicles[0]
+    const selected = st.vehicles.find((v) => v.id === st.selectedId && CATALOG[v.type]?.category === 'vehicle')
+    const v = selected ?? st.vehicles.find((item) => CATALOG[item.type]?.category === 'vehicle')
     if (!v) return
     const spec = CATALOG[v.type]
     const pose = poseAt(v, st.time)
