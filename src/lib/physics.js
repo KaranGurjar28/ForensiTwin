@@ -121,7 +121,8 @@ export function analyzeVehicle(v, { grade = 0, eff = 1 } = {}) {
   const vi = kmh2ms(v.speed)
   const startOfSkid = v.skid > 0 ? Math.sqrt(vi * vi + 2 * (v.mu * eff + grade / 100) * G * v.skid) : vi
   const dims = crushDims(spec)
-  const C = spec.noCrush ? 0 : crushDepth(dims.Leff, v.crush)
+  const crushReference = ['left', 'right'].includes(v.damageSide) ? spec.W : dims.Leff
+  const C = spec.noCrush ? 0 : crushDepth(crushReference, v.crush)
   return {
     id: v.id,
     skidSpeed: skidMin, // m/s: speed lost in the skid alone (minimum speed at start of skid)
