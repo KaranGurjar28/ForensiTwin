@@ -1,13 +1,17 @@
 import { useCallback, useRef, useState } from 'react'
+import { useFrame } from '@react-three/fiber'
 import { Html, TransformControls } from '@react-three/drei'
 import * as THREE from 'three'
 import { useStore } from '../store.js'
 import { CATALOG } from '../lib/catalog.js'
 import { bearingToRotY, wrap360, DEG, round } from '../lib/geo.js'
 
-function PersonModel({ color }) {
+function PersonModel({ color, posture = 'upright' }) {
+  const lying = ['prone-front', 'prone-back', 'side-lying'].includes(posture)
+  const rotZ = posture === 'prone-back' ? -Math.PI / 2 : lying ? Math.PI / 2 : 0
+  const scaleY = posture === 'seated' ? 0.62 : posture === 'crouched' ? 0.78 : 1
   return (
-    <group>
+    <group rotation={[0, 0, rotZ]} scale={[1, scaleY, 1]} position={[0, lying ? 0.08 : 0, 0]}>
       <mesh position={[0, 0.85, 0]} castShadow>
         <capsuleGeometry args={[0.16, 0.72, 4, 8]} />
         <meshStandardMaterial color={color} roughness={0.85} />
@@ -28,13 +32,14 @@ function PersonModel({ color }) {
   )
 }
 
-function AnimalModel({ type, color }) {
+function AnimalModel({ type, color, posture = 'standing' }) {
+  const lying = ['lying', 'lying-left', 'lying-right'].includes(posture)
   const cow = type === 'cow'
   const bodyL = cow ? 1.25 : 0.58
   const bodyH = cow ? 0.62 : 0.3
   const legH = cow ? 0.48 : 0.22
   return (
-    <group>
+    <group rotation={[0, 0, posture === 'lying-right' ? -Math.PI / 2 : lying ? Math.PI / 2 : 0]} position={[0, lying ? 0.12 : 0, 0]}>
       <mesh position={[0, legH + bodyH / 2, 0]} castShadow>
         <boxGeometry args={[cow ? 0.62 : 0.32, bodyH, bodyL]} />
         <meshStandardMaterial color={color} roughness={0.9} />
@@ -61,10 +66,10 @@ function ObjectModel({ v, spec }) {
   const c = v.color || spec.color
   switch (v.type) {
     case 'person':
-      return <PersonModel color={c} />
+      return <PersonModel color={c} posture={v.posture || 'upright'} />
     case 'dog':
     case 'cow':
-      return <AnimalModel type={v.type} color={c} />
+      return <AnimalModel type={v.type} color={c} posture={v.posture || 'standing'} />
     case 'tree':
       return (
         <group>
@@ -215,6 +220,25 @@ export default function SceneObject({ v }) {
   const gizmo = useStore((s) => s.gizmo)
   const labels = useStore((s) => s.layers.labels)
   const heightAt = useStore((s) => s.heightAt)
+  const afterImpact = useStore((s) => s.time >= 0)
+  const physics = useStore((s) => s.physics)
+
+  useFrame(() => {
+    const g = groupRef.current
+    if (!g) return
+    const st = useStore.getState()
+    const isTarget = st.physics?.collisionTargetKind === 'object' && st.physics?.collisionTargetId === v.id
+    if (isTarget && st.time > 0 && (v.type === 'person' || v.type === 'dog' || v.type === 'cow')) {
+      const primary = st.vehicles.find((item) => item.id === st.physics?.primaryVehicleId) || st.vehicles[0]
+      const heading = Number(v.postImpactHeading ?? primary?.heading ?? v.heading ?? 0)
+      const a = heading * Math.PI / 180
+      const distance = Math.min(st.time * 2.2, Number(v.postImpactDistance || 2.5))
+      const x = v.x + Math.sin(a) * distance
+      const z = v.z + Math.cos(a) * distance
+      g.position.set(x, st.heightAt(x, z), z)
+      g.rotation.set(0, bearingToRotY(heading), v.type === 'person' ? Math.min(0.25, st.time * 0.12) : 0)
+    }
+  })
 
   const onChange = () => {
     const g = groupRef.current
@@ -245,7 +269,7 @@ export default function SceneObject({ v }) {
           st.select(v.id)
         }}
       >
-        <ObjectModel v={v} spec={spec} />
+        <ObjectModel v={{ ...v, posture: afterImpact && ['person', 'dog', 'cow'].includes(v.type) && physics?.collisionTargetId === v.id && physics?.collisionTargetKind === 'object' ? (v.postImpactPosture || (v.type === 'person' ? 'prone-front' : 'lying')) : (v.posture || (v.type === 'person' ? 'upright' : 'standing')) }} spec={spec} />
         {selected && <SelectionRing spec={spec} />}
         {labels && (
           <Html position={[0, spec.H + 0.45, 0]} center style={{ pointerEvents: 'none' }} zIndexRange={[20, 0]}>
