@@ -14,7 +14,7 @@ function Skids() {
   const on = useStore((s) => s.layers.skids)
   if (!on) return null
   return vehicles
-    .filter((v) => v.skid > 0 && CATALOG[v.type].kind !== 'person')
+    .filter((v) => CATALOG[v.type]?.category === 'vehicle' && v.skid > 0)
     .map((v) => {
       const spec = CATALOG[v.type]
       const xs = spec.kind === 'moto' ? [0] : [-spec.W * 0.38, spec.W * 0.38]
@@ -40,7 +40,7 @@ function Paths() {
   const heightAt = useStore((s) => s.heightAt)
   const on = useStore((s) => s.layers.paths)
   if (!on) return null
-  return vehicles.map((v) => {
+  return vehicles.filter((v) => CATALOG[v.type]?.category === 'vehicle').map((v) => {
     const spec = CATALOG[v.type]
     const start = poseAt(v, -3)
     const els = []
