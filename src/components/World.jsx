@@ -117,12 +117,13 @@ function Houses({ houses }) {
 export default function World() {
   const osm = useStore((s) => s.osm)
   const layers = useStore((s) => s.layers)
+  const terrain = useStore((s) => s.terrain)
   const greenery = useStore((s) => s.env.greenery)
   const wet = useStore((s) => s.env.weather === 'rain')
 
   const world = useMemo(
-    () => (osm.data && osm.origin ? buildWorld(osm.data, osm.origin, { radius: osm.origin.radius }) : null),
-    [osm.data, osm.origin],
+    () => (osm.data && osm.origin ? buildWorld(osm.data, osm.origin, { radius: osm.origin.radius, heightAt: terrain }) : null),
+    [osm.data, osm.origin, terrain],
   )
   const scatter = useMemo(() => (world ? world.scatter(greenery) : { trees: [], houses: [] }), [world, greenery])
 
