@@ -2,8 +2,75 @@ import { useMemo } from 'react'
 import { useStore } from '../../store.js'
 import { analyzeCase, ms2kmh } from '../../lib/physics.js'
 import { round } from '../../lib/geo.js'
+import { CATALOG } from '../../lib/catalog.js'
 
 const kmh = (ms) => round(ms2kmh(ms), 1)
+
+function buildVisualScenario() {
+  const st = useStore.getState()
+  const settings = st.physics
+  const vehicles = st.vehicles
+  const objects = st.objects || []
+  const primary = vehicles.find((v) => v.id === settings.primaryVehicleId) || vehicles[0]
+  if (!primary) return
+  const type = settings.collisionType || 'vehicle_vehicle_head_on'
+  const pairCollision = type.startsWith('vehicle_vehicle') || type === 'vehicle_cyclist' || type === 'vehicle_motorcycle'
+  const otherVehicle = vehicles.find((v) => v.id === settings.collisionTargetId && v.id !== primary.id)
+    || vehicles.find((v) => v.id === settings.pair?.[1] && v.id !== primary.id)
+    || vehicles.find((v) => v.id !== primary.id)
+  const targetObject = objects.find((v) => v.id === settings.collisionTargetId)
+  const aSpec = CATALOG[primary.type] || { L: 4, W: 1.8 }
+  const setV = (v, patch) => st.updateVehicle(v.id, patch)
+
+  if (pairCollision && otherVehicle) {
+    const bSpec = CATALOG[otherVehicle.type] || { L: 4, W: 1.8 }
+    const gap = (aSpec.L + bSpec.L) / 2
+    let a = { x: -gap / 2, z: 0, heading: 90 }
+    let b = { x: gap / 2, z: 0, heading: 270 }
+    if (type === 'vehicle_cyclist') {
+      a = { x: -(aSpec.L / 2 + bSpec.W / 2), z: 0, heading: 90 }
+      b = { x: 0, z: 0, heading: 0 }
+    } else if (type === 'vehicle_motorcycle') {
+      a = { x: -gap / 2, z: 0, heading: 90 }
+      b = { x: gap / 2, z: 0.3, heading: 250 }
+    } else if (type === 'vehicle_vehicle_rear_end') {
+      a = { x: 0, z: -gap / 2, heading: 0 }
+      b = { x: 0, z: gap / 2, heading: 0 }
+    } else if (type === 'vehicle_vehicle_side') {
+      a = { x: -(aSpec.L / 2 + bSpec.W / 2), z: 0, heading: 90 }
+      b = { x: 0, z: 0, heading: 0 }
+    } else if (type === 'vehicle_vehicle_sideswipe_same') {
+      a = { x: -(aSpec.W + bSpec.W) / 4, z: 0, heading: 0 }
+      b = { x: (aSpec.W + bSpec.W) / 4, z: 0, heading: 0 }
+    } else if (type === 'vehicle_vehicle_sideswipe_opposite') {
+      a = { x: -gap / 2, z: -(aSpec.W + bSpec.W) / 2, heading: 90 }
+      b = { x: gap / 2, z: (aSpec.W + bSpec.W) / 2, heading: 270 }
+    } else if (type === 'vehicle_vehicle_oblique') {
+      a = { x: -gap / 2, z: 0, heading: 60 }
+      b = { x: gap / 2, z: 0.4, heading: 240 }
+    } else if (type === 'vehicle_vehicle_offset') {
+      a = { x: -gap / 2, z: -(aSpec.W + bSpec.W) * 0.16, heading: 90 }
+      b = { x: gap / 2, z: (aSpec.W + bSpec.W) * 0.16, heading: 270 }
+    }
+    const damageA = type === 'vehicle_vehicle_sideswipe_same' || type === 'vehicle_vehicle_sideswipe_opposite' ? 'right' : 'front'
+    const damageB = type === 'vehicle_vehicle_rear_end' ? 'rear' : type === 'vehicle_vehicle_side' || type.includes('sideswipe') ? 'left' : 'front'
+    setV(primary, { ...a, damageSide: damageA, crush: primary.crush > 0 ? primary.crush : 0.18, postDir: a.heading, postDist: primary.postDist > 0 ? primary.postDist : 3.5 })
+    setV(otherVehicle, { ...b, damageSide: damageB, crush: otherVehicle.crush > 0 ? otherVehicle.crush : 0.18, postDir: b.heading, postDist: otherVehicle.postDist > 0 ? otherVehicle.postDist : 2.5 })
+    st.setPhysics({ pair: [primary.id, otherVehicle.id], primaryVehicleId: primary.id, collisionTargetKind: 'vehicle', collisionTargetId: otherVehicle.id, normalDeg: null })
+  } else if (targetObject) {
+    const bSpec = CATALOG[targetObject.type] || { W: 0.6, L: 0.6 }
+    const isSoftTarget = ['person', 'dog', 'cow'].includes(targetObject.type)
+    st.updateObject(targetObject.id, { x: 0, z: 0, heading: 270, ...(isSoftTarget ? { posture: targetObject.type === 'person' ? 'upright' : 'standing', postImpactPosture: targetObject.type === 'person' ? 'prone-front' : 'lying', postImpactHeading: 90, postImpactDistance: targetObject.postImpactDistance || 2.5 } : {}) })
+    const x = -(aSpec.L / 2 + (isSoftTarget ? 0.25 : Math.max(bSpec.W || 0.5, 0.5) / 2))
+    setV(primary, { x, z: 0, heading: 90, damageSide: 'front', crush: primary.crush > 0 ? primary.crush : 0.18, postDir: 90, postDist: primary.postDist > 0 ? primary.postDist : 3.5 })
+    st.setPhysics({ primaryVehicleId: primary.id, collisionTargetKind: 'object', collisionTargetId: targetObject.id, normalDeg: null })
+  } else if (type === 'rollover' || type === 'run_off_road' || type === 'multi_event') {
+    setV(primary, { x: 0, z: 0, heading: 0, postDir: 35, postDist: primary.postDist > 0 ? primary.postDist : 5 })
+    st.setPhysics({ primaryVehicleId: primary.id })
+  }
+  st.setTime(st.tMin)
+  st.setTab('physics')
+}
 
 const COLLISION_TYPES = [
   { value: 'vehicle_vehicle_head_on', label: 'Vehicle–vehicle: head-on' },
@@ -62,7 +129,7 @@ export default function PhysicsPanel() {
   const targetList = targetKind === 'object' ? objects : vehicles
   const target = targetList.find((item) => item.id === targetId)
   const primary = vehicles.find((v) => v.id === (physics.primaryVehicleId || movers[0]?.id)) || movers[0]
-  const isPairCollision = selectedType.startsWith('vehicle_vehicle')
+  const isPairCollision = selectedType.startsWith('vehicle_vehicle') || selectedType === 'vehicle_cyclist' || selectedType === 'vehicle_motorcycle'
   const energyJ = primary ? 0.5 * Number(primary.mass || 0) * (Number(primary.speed || 0) / 3.6) ** 2 : null
   const targetSpeed = targetKind === 'vehicle' && target ? Number(target.speed || 0) : 0
   const relativeSpeed = primary && target && targetKind === 'vehicle'
@@ -75,6 +142,16 @@ export default function PhysicsPanel() {
   const updateTargetKind = (kind) => setPhysics({ collisionTargetKind: kind, collisionTargetId: '' })
   const idA = physics.pair?.[0] ?? movers[0]?.id ?? ''
   const idB = physics.pair?.[1] ?? movers.find((v) => v.id !== idA)?.id ?? ''
+  const changeCollisionType = (value) => {
+    const objectTypes = { vehicle_pedestrian: ['person'], vehicle_animal: ['dog', 'cow'], vehicle_tree: ['tree'], vehicle_pole: ['pole'], vehicle_wall: ['wall', 'building'], vehicle_divider: ['divider'], vehicle_barrier: ['barrier'], vehicle_stationary: ['tree', 'pole', 'wall', 'building', 'divider', 'barrier', 'cone', 'sign'] }
+    if (objectTypes[value]) {
+      const nextTarget = objects.find((item) => objectTypes[value].includes(item.type))
+      setPhysics({ collisionType: value, collisionTargetKind: 'object', collisionTargetId: nextTarget?.id || '' })
+    } else if (value.startsWith('vehicle_vehicle') || value === 'vehicle_cyclist' || value === 'vehicle_motorcycle') {
+      const nextTarget = vehicles.find((item) => item.id !== primary?.id && (value === 'vehicle_cyclist' ? item.type === 'bicycle' : value === 'vehicle_motorcycle' ? ['moto', 'scooter'].includes(item.type) : true)) || vehicles.find((item) => item.id !== primary?.id)
+      setPhysics({ collisionType: value, collisionTargetKind: 'vehicle', collisionTargetId: nextTarget?.id || '' })
+    } else setPhysics({ collisionType: value })
+  }
 
   return (
     <div className="ft-panel">
@@ -83,10 +160,12 @@ export default function PhysicsPanel() {
       <div className="ft-block">
         <div className="ft-block-title">Collision scenario</div>
         <Field label="Collision type">
-          <select value={selectedType} onChange={(e) => setPhysics({ collisionType: e.target.value })}>
+          <select value={selectedType} onChange={(e) => changeCollisionType(e.target.value)}>
             {COLLISION_TYPES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
           </select>
         </Field>
+        <button className="ft-cta" style={{ width: '100%', margin: '4px 0 12px' }} onClick={buildVisualScenario}>Build visual scenario in 3D</button>
+        <p className="ft-note">Builds a starting layout and plays the approach into the configured impact. Preset post-impact travel is illustrative; replace it with measured evidence where available.</p>
         <div className="ft-row2">
           <Field label="Primary vehicle">
             <select value={primary?.id || ''} onChange={(e) => setPhysics({ primaryVehicleId: e.target.value })}>
@@ -154,7 +233,7 @@ export default function PhysicsPanel() {
         </div>
       )}
 
-      {movers.length >= 2 && (
+      {movers.length >= 2 && isPairCollision && (
         <div className="ft-block">
           <div className="ft-block-title">Two-vehicle momentum model</div>
           <div className="ft-row2">
