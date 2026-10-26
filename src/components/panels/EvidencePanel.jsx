@@ -198,7 +198,15 @@ export default function EvidencePanel() {
                 </button>
               </div>
               <input className="ft-mnote" placeholder="Evidence description / collection ID" value={m.note || ''} onChange={(e) => updateMarker(m.id, { note: e.target.value })} />
-              <div className="ft-mute">{Number(m.x || 0).toFixed(1)} m, {Number(m.z || 0).toFixed(1)} m from scene origin</div>
+              <div className="ft-row2 ft-marker-coords">
+                <label className="ft-field"><span>Scene X (m)</span><input type="number" step="0.1" value={Number(m.x || 0)} onChange={(e) => updateMarker(m.id, { x: Number(e.target.value) || 0 })} /></label>
+                <label className="ft-field"><span>Scene Z (m)</span><input type="number" step="0.1" value={Number(m.z || 0)} onChange={(e) => updateMarker(m.id, { z: Number(e.target.value) || 0 })} /></label>
+              </div>
+              <div className="ft-row2">
+                <label className="ft-field"><span>Mark direction</span><input type="number" min="0" max="360" step="5" value={Number(m.heading || 0)} onChange={(e) => updateMarker(m.id, { heading: Math.max(0, Math.min(360, Number(e.target.value) || 0)) })} /></label>
+                <label className="ft-field"><span>Mark length (m)</span><input type="number" min="0.2" max="18" step="0.5" value={Number(m.length || 0.5)} onChange={(e) => updateMarker(m.id, { length: Math.max(0.2, Math.min(18, Number(e.target.value) || 0.5)) })} /></label>
+              </div>
+              <div className="ft-mute">Coordinates and mark geometry update directly in the 3D scene.</div>
             </div>
           ))}
         </div>
