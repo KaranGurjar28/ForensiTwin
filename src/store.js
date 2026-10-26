@@ -22,11 +22,14 @@ export const MARKER_KINDS = {
   skid: 'Skid mark',
   tyre: 'Tyre print',
   paint: 'Paint chip / transfer',
-  blood: 'Blood / biological sample',
+  blood: 'Blood evidence',
+  bio: 'Other biological trace',
   fibre: 'Fibre evidence',
   hair: 'Hair evidence',
   glass: 'Broken glass',
   fluid: 'Fluid leak',
+  seatbelt: 'Seat-belt evidence',
+  airbag: 'Airbag evidence',
   impact: 'Point of impact',
   rest: 'Final rest position',
   witness: 'Witness location',
@@ -46,6 +49,13 @@ export function makeVehicle(type, index = 0, over = {}) {
     licensePlate: '',
     vin: '',
     speedometerKmh: '',
+    occupantCount: 0,
+    occupantDetails: [],
+    posture: 'upright',
+    postImpactPosture: 'prone-front',
+    postImpactDistance: 2.5,
+    postImpactHeading: heading,
+    damageSide: 'front',
     x: index === 0 ? 0 : (index % 2 ? 1 : -1) * (5 + index * 2),
     z: index === 0 ? 0 : 0,
     heading,
@@ -241,7 +251,7 @@ export const useStore = create((set, get) => ({
   placing: null, // marker kind currently being placed, or null
   setPlacing: (placing) => set({ placing, tool: placing ? 'marker' : get().tool === 'marker' ? 'select' : get().tool }),
   addMarker: (kind, x, z) => set((s) => ({
-    markers: [...s.markers, { id: uid(), kind, x, z, n: s.markers.length + 1, note: '', photo: null }],
+    markers: [...s.markers, { id: uid(), kind, x, z, n: s.markers.length + 1, note: '', photo: null, heading: 0, length: kind === 'skid' ? 5 : kind === 'yaw' || kind === 'scrub' ? 3 : 0.5 }],
   })),
   updateMarker: (id, p) => set((s) => ({ markers: s.markers.map((m) => (m.id === id ? { ...m, ...p } : m)) })),
   removeMarker: (id) => set((s) => ({
@@ -279,7 +289,7 @@ export const useStore = create((set, get) => ({
   tMin: -4,
   tMax: 5,
   setTime: (time) => set({ time, playing: false }),
-  setPlaying: (playing) => set((s) => ({ playing, time: playing && s.time >= s.tMax ? s.tMin : s.time })),
+  setPlaying: (playing) => set((s) => ({ playing, time: playing && (s.time >= s.tMax || Math.abs(s.time) < 0.03) ? s.tMin : s.time })),
   setRate: (rate) => set({ rate }),
 
   // ---- case file
