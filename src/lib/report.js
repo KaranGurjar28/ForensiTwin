@@ -23,9 +23,9 @@ const COLORS = {
 // Paste your watermark image's complete data URL below when available.
 // Example: const WATERMARK_IMAGE = 'data:image/png;base64,...'
 // Keep an empty string until you have the image.
-const WATERMARK_IMAGE = 'models/Watermark.png'
+const WATERMARK_IMAGE = ''
 
-const REPORT_TITLE = 'FORENSITWIN - DIGITAL ACCIDENT RECONSTRUCTION'
+const REPORT_TITLE = 'FORENSITWIN — DIGITAL ACCIDENT RECONSTRUCTION'
 const GENERATED_AT = new Date()
 
 const safe = (value, fallback = 'Not recorded') => {
@@ -498,6 +498,7 @@ function addSummaryPage(doc, store, caseId) {
   const caseInfo = store.caseInfo || {}
   const env = store.env || {}
   const vehicles = store.vehicles || []
+  const objects = store.objects || []
   const markers = store.markers || []
   const location = store.location || {}
 
@@ -509,8 +510,9 @@ function addSummaryPage(doc, store, caseId) {
     ['Location / address', safe(location.label)],
     ['GPS coordinates', coordinateText(location)],
     ['Investigator', safe(caseInfo.investigator)],
-    ['Vehicles / moving objects', vehicles.length],
-    ['Pedestrians entered as objects', getPedestrianCount(vehicles)],
+    ['Vehicles', vehicles.length],
+    ['Scene objects', objects.length],
+    ['Pedestrians entered in scene', getPedestrianCount([...vehicles, ...objects])],
     ['Weather', getEnvironmentValue(env, 'weather')],
     ['Visibility', getEnvironmentValue(env, 'visibility')],
     ['Road condition', getEnvironmentValue(env, 'roadCondition', 'road', 'surface')],
@@ -1012,11 +1014,15 @@ export async function generateReport({ onStatus } = {}) {
   let topImage = null
   let overviewImage = null
   let driverImage = null
+  let sideImage = null
+  let rearImage = null
 
   try {
     topImage = await captureView(store, shoot, 'top', 'Accident scene top view', onStatus)
     overviewImage = await captureView(store, shoot, 'orbit', 'Accident overview', onStatus)
     driverImage = await captureView(store, shoot, 'driver', "Driver's-eye view", onStatus)
+    sideImage = await captureView(store, shoot, 'side', 'Scene side view', onStatus)
+    rearImage = await captureView(store, shoot, 'rear', 'Scene rear view', onStatus)
   } finally {
     useStore.setState({ cameraMode: previousMode })
   }
@@ -1030,11 +1036,17 @@ export async function generateReport({ onStatus } = {}) {
 
   onStatus?.('Building accident overview...')
   addImagePage(doc, 'Accident Overview', safe(location.label), overviewImage, caseId)
-  addOverviewTable(doc, vehicles)
+  addOverviewTable(doc, [...vehicles, ...(Array.isArray(store.objects) ? store.objects : [])])
 
   onStatus?.("Building driver's-eye view...")
   addImagePage(doc, "Driver's-Eye View", safe(location.label), driverImage, caseId)
   addDriverViewDetails(doc, store)
+
+  onStatus?.('Building side view...')
+  addImagePage(doc, 'Accident Scene — Side View', safe(location.label), sideImage, caseId)
+
+  onStatus?.('Building rear view...')
+  addImagePage(doc, 'Accident Scene — Rear View', safe(location.label), rearImage, caseId)
 
   onStatus?.('Building vehicle analysis...')
   doc.addPage()
@@ -1073,6 +1085,9 @@ export async function generateReport({ onStatus } = {}) {
 
   // Keep the existing case-report flow but correct page numbers and
   // apply the watermark to every final page, including overflow pages.
+  // jsPDF creates an empty page on construction. All report sections explicitly add their own pages.
+  // Remove that constructor page so the PDF opens on the actual Case Summary.
+  if (doc.internal.getNumberOfPages() > 1) doc.deletePage(1)
   const totalPages = doc.internal.getNumberOfPages()
 
   for (let page = 1; page <= totalPages; page++) {
