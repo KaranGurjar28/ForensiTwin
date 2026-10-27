@@ -377,23 +377,14 @@ input, select, textarea, button { font-family: inherit; }
   padding: 1px 5px;
   border-radius: 4px;
 }
-/* Visual forensic studio additions */
-.ft-cta { box-shadow: 0 3px 0 rgba(22,28,34,.12); transition: transform .12s ease, filter .12s ease; }
-.ft-cta:hover { filter: brightness(1.05); transform: translateY(-1px); }
-.ft-color-field input[type="color"] { display: block; }
-.ft-vcard { overflow: hidden; transition: border-color .14s ease, box-shadow .14s ease; }
-.ft-vcard-on { border-color: #202a34; box-shadow: 0 0 0 1px #202a34, 0 6px 18px rgba(22,28,34,.08); }
-.ft-tag { max-width: 250px; white-space: normal; text-align: center; line-height: 1.45; box-shadow: 0 3px 12px rgba(0,0,0,.22); }
-.ft-tag small { font-size: 9px; letter-spacing: .01em; opacity: .92; }
-.ft-tag-on { box-shadow: 0 4px 16px rgba(0,0,0,.24); }
-.ft-marker-label { max-width: 220px; overflow: hidden; text-overflow: ellipsis; box-shadow: 0 2px 8px rgba(0,0,0,.22); }
-.ft-marker-blood { background: rgba(112, 9, 24, .94); }
-.ft-marker-hair, .ft-marker-fiber { background: rgba(84, 63, 39, .94); }
-.ft-marker-paint { background: rgba(34, 75, 112, .94); }
-.ft-marker-impact { background: rgba(148, 111, 0, .96); color: #fff; }
-.ft-replaybtn { background: #e7edf1; color: #17212a; font-size: 23px; font-weight: 700; line-height: 1; }
-@media (max-width: 559px) { .ft-playbar { left: 8px; right: 8px; bottom: 8px; padding: 7px 9px; gap: 7px; } .ft-playtime { min-width: 48px; font-size: 10px; } }
-.ft-marker-coords { gap: 8px; }
-.ft-mcard .ft-field { margin-bottom: 6px; }
-.ft-mcard .ft-field input[type="number"] { width: 100%; min-width: 0; padding: 6px 7px; border: 1px solid var(--rule); border-radius: 3px; background: #fff; font-size: 12px; color: var(--ink); font-weight: 400; }
-.ft-mcard .ft-field span { font-size: 10.5px; }
+
+/* Replay export controls */
+.ft-playbar-wrap { position: absolute; left: 14px; right: 14px; bottom: 14px; z-index: 30; display: flex; flex-direction: column; gap: 6px; pointer-events: none; }
+.ft-playbar-wrap .ft-playbar { position: relative; left: auto; right: auto; bottom: auto; width: 100%; pointer-events: auto; }
+.ft-export-video { flex: 0 0 auto; border: 1px solid rgba(245,196,0,.65); border-radius: 8px; background: #f5c400; color: #161c22; font-weight: 700; font-size: 12px; line-height: 1.1; padding: 8px 12px; cursor: pointer; white-space: nowrap; }
+.ft-export-video:hover:not(:disabled) { background: #ffda35; }
+.ft-export-video:disabled { opacity: .6; cursor: wait; }
+.ft-export-message { align-self: flex-end; max-width: min(560px, 100%); padding: 7px 10px; border: 1px solid rgba(255,255,255,.14); border-radius: 8px; background: rgba(15,20,26,.94); color: #e9edf1; font-size: 11px; line-height: 1.4; pointer-events: auto; box-shadow: 0 5px 18px rgba(0,0,0,.18); }
+.ft-tag { display: flex; flex-direction: column; gap: 2px; min-width: 64px; max-width: 220px; white-space: nowrap; }
+.ft-tag span { font-size: 9px; opacity: .92; font-weight: 500; }
+@media (max-width: 640px) { .ft-playbar-wrap { left: 6px; right: 6px; bottom: 6px; } .ft-export-video { padding: 7px 8px; font-size: 11px; } .ft-export-message { font-size: 10px; } }
