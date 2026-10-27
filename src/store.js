@@ -15,27 +15,8 @@ export const DEFAULT_LAYERS = {
 }
 
 export const MARKER_KINDS = {
-  debris: 'Debris / fragments',
-  gouge: 'Gouge mark',
-  yaw: 'Yaw mark',
-  scrub: 'Scrub / tyre skip mark',
-  skid: 'Skid mark',
-  tyre: 'Tyre print',
-  paint: 'Paint chip / transfer',
-  blood: 'Blood evidence',
-  bio: 'Other biological trace',
-  fibre: 'Fibre evidence',
-  hair: 'Hair evidence',
-  glass: 'Broken glass',
-  fluid: 'Fluid leak',
-  seatbelt: 'Seat-belt evidence',
-  airbag: 'Airbag evidence',
-  impact: 'Point of impact',
-  rest: 'Final rest position',
-  witness: 'Witness location',
-  cctv: 'CCTV / camera location',
-  photo: 'Photo point',
-  other: 'Other evidence',
+  debris: 'Debris', gouge: 'Gouge mark', yaw: 'Yaw mark', rest: 'Rest position',
+  witness: 'Witness', glass: 'Broken glass', fluid: 'Fluid leak', photo: 'Photo point', other: 'Other',
 }
 
 export function makeVehicle(type, index = 0, over = {}) {
@@ -49,13 +30,7 @@ export function makeVehicle(type, index = 0, over = {}) {
     licensePlate: '',
     vin: '',
     speedometerKmh: '',
-    occupantCount: 0,
-    occupantDetails: [],
-    posture: 'upright',
-    postImpactPosture: 'prone-front',
-    postImpactDistance: 2.5,
-    postImpactHeading: heading,
-    damageSide: 'front',
+    occupantCount: type === 'bicycle' ? 1 : (['moto', 'scooter', 'rickshaw'].includes(type) ? 1 : 2),
     x: index === 0 ? 0 : (index % 2 ? 1 : -1) * (5 + index * 2),
     z: index === 0 ? 0 : 0,
     heading,
@@ -111,7 +86,7 @@ export const useStore = create((set, get) => ({
         sceneId: s.sceneId + 1,
         view: 'scene',
         tab: s.tab === 'scene' && changed ? 'vehicles' : s.tab,
-        ...(changed && !preserve ? { vehicles: [], objects: [], selectedId: null, markers: [], evidenceAssessment: {}, time: 0, playing: false } : {}),
+        ...(changed && !preserve ? { vehicles: [], objects: [], selectedId: null, markers: [], time: 0, playing: false } : {}),
       }))
 
       // Terrain is best-effort and loads independently of OSM geometry —
@@ -147,7 +122,7 @@ export const useStore = create((set, get) => ({
       sceneId: s.sceneId + 1,
       view: 'scene',
       tab: s.tab === 'scene' && changed ? 'vehicles' : s.tab,
-      ...(changed ? { vehicles: [], objects: [], selectedId: null, markers: [], evidenceAssessment: {}, time: 0, playing: false } : {}),
+      ...(changed ? { vehicles: [], objects: [], selectedId: null, markers: [], time: 0, playing: false } : {}),
     }))
     set({ terrainStatus: 'loading' })
     fetchElevation(location.lat, location.lon, radius).then((sampler) => {
@@ -251,22 +226,12 @@ export const useStore = create((set, get) => ({
   placing: null, // marker kind currently being placed, or null
   setPlacing: (placing) => set({ placing, tool: placing ? 'marker' : get().tool === 'marker' ? 'select' : get().tool }),
   addMarker: (kind, x, z) => set((s) => ({
-    markers: [...s.markers, { id: uid(), kind, x, z, n: s.markers.length + 1, note: '', photo: null, heading: 0, length: kind === 'skid' ? 5 : kind === 'yaw' || kind === 'scrub' ? 3 : 0.5 }],
+    markers: [...s.markers, { id: uid(), kind, x, z, n: s.markers.length + 1, note: '', photo: null }],
   })),
   updateMarker: (id, p) => set((s) => ({ markers: s.markers.map((m) => (m.id === id ? { ...m, ...p } : m)) })),
   removeMarker: (id) => set((s) => ({
     markers: s.markers.filter((m) => m.id !== id).map((m, i) => ({ ...m, n: i + 1 })),
   })),
-
-  // ---- structured accident evidence assessment
-  evidenceAssessment: {},
-  updateEvidenceField: (fieldId, entry) => set((s) => ({
-    evidenceAssessment: {
-      ...s.evidenceAssessment,
-      [fieldId]: { status: 'unknown', value: '', notes: '', ...(s.evidenceAssessment?.[fieldId] || {}), ...entry },
-    },
-  })),
-  setEvidenceAssessment: (evidenceAssessment) => set({ evidenceAssessment: evidenceAssessment || {} }),
 
   // ---- measuring ruler
   tool: 'select', // 'select' | 'marker' | 'ruler'
@@ -279,7 +244,7 @@ export const useStore = create((set, get) => ({
   clearRuler: () => set({ ruler: [] }),
 
   // ---- physics settings
-  physics: { pair: null, e: 0.25, normalDeg: null, grade: 0, eff: 1, collisionType: 'vehicle_vehicle_head_on', collisionTargetKind: 'vehicle', collisionTargetId: '', primaryVehicleId: '', impactAngleDeg: 0, impactSequence: 'primary' },
+  physics: { pair: null, e: 0.25, normalDeg: null, grade: 0, eff: 1 },
   setPhysics: (p) => set((s) => ({ physics: { ...s.physics, ...p } })),
 
   // ---- playback
@@ -289,7 +254,7 @@ export const useStore = create((set, get) => ({
   tMin: -4,
   tMax: 5,
   setTime: (time) => set({ time, playing: false }),
-  setPlaying: (playing) => set((s) => ({ playing, time: playing && (s.time >= s.tMax || Math.abs(s.time) < 0.03) ? s.tMin : s.time })),
+  setPlaying: (playing) => set((s) => ({ playing, time: playing && s.time >= s.tMax ? s.tMin : s.time })),
   setRate: (rate) => set({ rate }),
 
   // ---- case file
@@ -307,7 +272,7 @@ export const useStore = create((set, get) => ({
       version: 1,
       location: s.location, radius: s.radius,
       vehicles: s.vehicles, objects: s.objects, markers: s.markers,
-      env: s.env, layers: s.layers, caseInfo: s.caseInfo, physics: s.physics, evidenceAssessment: s.evidenceAssessment,
+      env: s.env, layers: s.layers, caseInfo: s.caseInfo, physics: s.physics,
     }
   },
   restore: (d) => {
@@ -318,10 +283,10 @@ export const useStore = create((set, get) => ({
       location: d.location, radius: d.radius ?? 800,
       vehicles: savedVehicles,
       objects: [...(d.objects ?? []), ...legacyObjects],
-      markers: d.markers ?? [], evidenceAssessment: d.evidenceAssessment ?? {},
+      markers: d.markers ?? [],
       env: { ...DEFAULT_ENV, ...d.env }, layers: { ...DEFAULT_LAYERS, ...d.layers },
       caseInfo: d.caseInfo ?? { number: '', investigator: '', notes: '' },
-      physics: { pair: null, e: 0.25, normalDeg: null, grade: 0, eff: 1, collisionType: 'vehicle_vehicle_head_on', collisionTargetKind: 'vehicle', collisionTargetId: '', primaryVehicleId: '', impactAngleDeg: 0, impactSequence: 'primary', ...d.physics },
+      physics: { pair: null, e: 0.25, normalDeg: null, grade: 0, eff: 1, ...d.physics },
       selectedId: null, time: 0, playing: false, tool: 'select', ruler: [],
     })
     return get().loadOsm({ preserve: true })
