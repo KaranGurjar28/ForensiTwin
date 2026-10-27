@@ -15,8 +15,10 @@ export const DEFAULT_LAYERS = {
 }
 
 export const MARKER_KINDS = {
-  debris: 'Debris', gouge: 'Gouge mark', yaw: 'Yaw mark', rest: 'Rest position',
-  witness: 'Witness', glass: 'Broken glass', fluid: 'Fluid leak', photo: 'Photo point', other: 'Other',
+  blood: 'Blood trace', hair: 'Hair', fibre: 'Fibre', paint: 'Paint transfer',
+  debris: 'Debris', gouge: 'Gouge mark', skid: 'Skid mark', yaw: 'Yaw mark', scrub: 'Scrub / tyre skip mark',
+  tyre: 'Tyre print', rest: 'Rest position', impact: 'Point of impact', glass: 'Broken glass', fluid: 'Fluid leak',
+  seatbelt: 'Seat-belt evidence', airbag: 'Airbag evidence', cctv: 'CCTV camera', witness: 'Witness', photo: 'Photo point', other: 'Other',
 }
 
 export function makeVehicle(type, index = 0, over = {}) {
@@ -221,6 +223,10 @@ export const useStore = create((set, get) => ({
     if (object) return get().updateObject(id, { heading: wrap360(object.heading + d) })
   },
 
+  // ---- structured accident evidence register (case-persistent)
+  evidenceAssessment: {},
+  updateEvidenceField: (fieldId, entry) => set((s) => ({ evidenceAssessment: { ...s.evidenceAssessment, [fieldId]: entry } })),
+
   // ---- evidence markers
   markers: [],
   placing: null, // marker kind currently being placed, or null
@@ -271,7 +277,7 @@ export const useStore = create((set, get) => ({
     return {
       version: 1,
       location: s.location, radius: s.radius,
-      vehicles: s.vehicles, objects: s.objects, markers: s.markers,
+      vehicles: s.vehicles, objects: s.objects, markers: s.markers, evidenceAssessment: s.evidenceAssessment,
       env: s.env, layers: s.layers, caseInfo: s.caseInfo, physics: s.physics,
     }
   },
@@ -283,7 +289,7 @@ export const useStore = create((set, get) => ({
       location: d.location, radius: d.radius ?? 800,
       vehicles: savedVehicles,
       objects: [...(d.objects ?? []), ...legacyObjects],
-      markers: d.markers ?? [],
+      markers: (d.markers ?? []).map((m, i) => ({ ...m, n: m.n ?? i + 1 })), evidenceAssessment: d.evidenceAssessment ?? {},
       env: { ...DEFAULT_ENV, ...d.env }, layers: { ...DEFAULT_LAYERS, ...d.layers },
       caseInfo: d.caseInfo ?? { number: '', investigator: '', notes: '' },
       physics: { pair: null, e: 0.25, normalDeg: null, grade: 0, eff: 1, ...d.physics },
