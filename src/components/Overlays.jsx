@@ -6,7 +6,7 @@ import { CATALOG } from '../lib/catalog.js'
 import { bearingToRotY, bearingToVec } from '../lib/geo.js'
 import { poseAt, postSpeedOf, ms2kmh } from '../lib/physics.js'
 
-const offsetMat = (f) => ({ polygonOffset: true, polygonOffsetFactor: f, polygonOffsetUnits: f })
+const offsetMat = (f) => ({ polygonOffset: true, polygonOffsetFactor: f, polygonOffsetUnits: f, depthTest: false, depthWrite: false })
 
 function Skids() {
   const vehicles = useStore((s) => s.vehicles)
@@ -110,7 +110,7 @@ function GroundDecal({ kind, length = 1 }) {
   // materials. Small samples are deliberately exaggerated for scene readability.
   const span = Math.max(0.65, Math.min(2.4, Number(length) || 1))
   const decalMaterial = (color, opacity = 0.96) => (
-    <meshBasicMaterial color={color} transparent opacity={opacity} depthWrite={false} side={2} polygonOffset polygonOffsetFactor={-4} />
+    <meshBasicMaterial color={color} transparent opacity={opacity} side={2} depthTest={false} depthWrite={false} polygonOffset polygonOffsetFactor={-8} polygonOffsetUnits={-8} />
   )
 
   if (kind === 'blood') {
@@ -161,7 +161,7 @@ function GroundDecal({ kind, length = 1 }) {
   if (kind === 'impact') return <group position={[0, 0.065, 0]}>
     <mesh rotation={[-Math.PI / 2, 0, 0]}><ringGeometry args={[0.32, 0.46, 32]} />{decalMaterial('#fff000')}</mesh>
     <mesh rotation={[-Math.PI / 2, 0, 0]}><ringGeometry args={[0.18, 0.26, 32]} />{decalMaterial('#ff2418')}</mesh>
-    <mesh position={[0, 0.04, 0]}><sphereGeometry args={[0.08, 12, 10]} /><meshBasicMaterial color="#fff000" /></mesh>
+    <mesh position={[0, 0.04, 0]}><sphereGeometry args={[0.08, 12, 10]} /><meshBasicMaterial color="#fff000" depthTest={false} depthWrite={false} /></mesh>
   </group>
   if (kind === 'glass') {
     return <group position={[0, 0.055, 0]} rotation={[-Math.PI / 2, 0, 0]} scale={span}>
@@ -170,7 +170,7 @@ function GroundDecal({ kind, length = 1 }) {
         const r = 0.08 + (i % 6) * 0.065
         return <mesh key={i} position={[Math.cos(a) * r, Math.sin(a) * r, 0.004 + i * 0.0002]} rotation={[0, 0, a]}>
           <circleGeometry args={[0.045 + (i % 3) * 0.012, 3]} />
-          <meshStandardMaterial color={i % 2 ? '#a9f7ff' : '#f2ffff'} emissive="#276f80" emissiveIntensity={0.35} metalness={0.15} roughness={0.08} side={2} />
+          <meshBasicMaterial color={i % 2 ? '#a9f7ff' : '#f2ffff'} transparent opacity={0.98} side={2} depthTest={false} depthWrite={false} />
         </mesh>
       })}
       <mesh><ringGeometry args={[0.43, 0.48, 32]} />{decalMaterial('#47dfff', 0.9)}</mesh>
@@ -186,7 +186,7 @@ function GroundDecal({ kind, length = 1 }) {
     <mesh position={[0, 0, 0.004]} rotation={[0, 0, 0.3]}><planeGeometry args={[0.11, 0.72]} />{decalMaterial('#171717')}</mesh>
   </group>
   if (kind === 'debris') return <group position={[0, 0.07, 0]}>
-    {Array.from({ length: 9 }, (_, i) => <mesh key={i} position={[Math.cos(i * 2.4) * (0.18 + (i % 3) * 0.11), 0.02 + (i % 3) * 0.015, Math.sin(i * 2.4) * (0.18 + (i % 2) * 0.12)]} rotation={[i * 0.3, i * 0.6, i * 0.2]}><dodecahedronGeometry args={[0.09 + (i % 3) * 0.025, 0]} /><meshStandardMaterial color={['#e6d7b8', '#b8c4cf', '#31353a', '#c92d2d'][i % 4]} roughness={0.75} /></mesh>)}
+    {Array.from({ length: 9 }, (_, i) => <mesh key={i} position={[Math.cos(i * 2.4) * (0.18 + (i % 3) * 0.11), 0.02 + (i % 3) * 0.015, Math.sin(i * 2.4) * (0.18 + (i % 2) * 0.12)]} rotation={[i * 0.3, i * 0.6, i * 0.2]}><dodecahedronGeometry args={[0.09 + (i % 3) * 0.025, 0]} /><meshBasicMaterial color={['#e6d7b8', '#b8c4cf', '#31353a', '#c92d2d'][i % 4]} depthTest={false} depthWrite={false} /></mesh>)}
   </group>
   if (kind === 'rest') return <group position={[0, 0.06, 0]} rotation={[-Math.PI / 2, 0, 0]}>
     <mesh><ringGeometry args={[0.42, 0.5, 32]} />{decalMaterial('#f5d000')}</mesh>
@@ -213,7 +213,7 @@ function Markers() {
     const y = heightAt(m.x, m.z)
     const label = MARKER_KINDS[m.kind] || m.kind || 'Evidence'
     return (
-      <group key={m.id} position={[m.x, y, m.z]}>
+      <group key={m.id} position={[m.x, y + 0.08, m.z]} renderOrder={1000}>
         <GroundDecal kind={m.kind} length={m.length || 1} />
         {/* Move the evidence tent away from the trace so it doesn't cover the evidence graphic. */}
         <group position={[0.72, 0, 0.42]}><EvidenceTent n={m.n} /></group>
