@@ -132,7 +132,15 @@ function buildTruck(s) {
   const parts = [
     P(box(W * 0.85, 0.35, L * 0.96, 0, 0.62, 0, [2, 2, 3]), 'dark'),
     P(box(W, 2.0, 2.1, 0, 0.8 + 1.0, L / 2 - 1.1, [3, 3, 4]), 'accent'),
-    P(box(W * 0.92, 0.85, 0.06, 0, 2.15, L / 2 + 0.02, [3, 3, 1]), 'glass'),
+    P(box(W * 0.92, 0.85, 0.06, 0, 2.15, L / 2 + 0.02, [3, 3, 1]), 'glass', false),
+    // Visible cab interior and illustrative occupants behind the windshield.
+    P(box(W * 0.78, 0.12, 0.34, 0, 1.25, L / 2 - 1.72, [3, 2, 2]), 'interior', false),
+    ...[-1, 1].flatMap((sx) => [
+      P(box(W * 0.22, 0.16, 0.22, sx * W * 0.2, 1.08, L / 2 - 1.45, [2, 2, 2]), 'seat', false),
+      P(box(W * 0.22, 0.3, 0.08, sx * W * 0.2, 1.28, L / 2 - 1.52, [2, 3, 1]), 'seat', false),
+      P(cyl(0.075, 0.085, 0.22, sx * W * 0.2, 1.55, L / 2 - 1.36, 10), 'clothes', false),
+      P(ball(0.085, sx * W * 0.2, 1.73, L / 2 - 1.34), 'skin', false),
+    ]),
     P(box(W * 1.02, 0.25, 0.2, 0, 0.9, L / 2 - 0.02, [3, 2, 1]), 'dark'),
     P(box(W * 0.18, 0.16, 0.05, -W * 0.36, 1.05, L / 2 + 0.03, [2, 1, 1]), 'headlight'),
     P(box(W * 0.18, 0.16, 0.05, W * 0.36, 1.05, L / 2 + 0.03, [2, 1, 1]), 'headlight'),
