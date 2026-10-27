@@ -24,6 +24,14 @@ export default function CameraRig() {
       camera.position.set(0.01, 130, 0)
       controls.current?.target.set(0, 0, 0)
     }
+    if (mode === 'side') {
+      camera.position.set(38, 12, 0)
+      controls.current?.target.set(0, 0, 0)
+    }
+    if (mode === 'rear') {
+      camera.position.set(0, 10, -42)
+      controls.current?.target.set(0, 0, 0)
+    }
     prevMode.current = mode
   }, [mode, camera])
 
@@ -47,7 +55,7 @@ export default function CameraRig() {
     }
   })
 
-  const orbitLike = mode === 'orbit' || mode === 'top'
+  const orbitLike = mode === 'orbit' || mode === 'top' || mode === 'side' || mode === 'rear'
   return orbitLike ? (
     <OrbitControls
       ref={controls}
