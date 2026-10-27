@@ -47,19 +47,51 @@ function taper(g, { front = 0.25, rear = 0.12, side = 0.1 }) {
 
 const P = (geo, mat, deform = true) => ({ geo, mat, deform })
 
-function buildCar(s) {
+function buildCar(s, type = 'hatch_m') {
   const { L, W, H } = s
   const clear = 0.2
   const bodyTop = H * 0.55
   const bodyH = bodyTop - clear
-  const cabinH = H - bodyTop
-  const cabinL = L * s.cabin
+  const cabinH = Math.max(0.42, H - bodyTop)
+  const cabinL = L * (s.cabin ?? 0.56)
   const cabinZ = -L * 0.05
-  const r = s.high ? 0.36 : 0.31
+  const roofH = Math.max(0.08, H * 0.075)
+  const paneY = bodyTop + cabinH * 0.52
+  const paneH = Math.max(0.18, cabinH * 0.62)
+  const sidePaneL = cabinL * 0.72
+  const pillarW = Math.max(0.055, W * 0.035)
   const parts = [
+    // Main body and roof are separate so the glass area is not an opaque black block.
     P(box(W, bodyH, L, 0, clear + bodyH / 2, 0, [4, 4, 6]), 'body'),
-    P(taper(box(W * 0.9, cabinH, cabinL, 0, bodyTop + cabinH / 2, cabinZ, [4, 5, 6]), s.taper), 'glass'),
-    P(box(W * 0.74, 0.05, cabinL * 0.62, 0, H - 0.015, cabinZ - 0.02, [4, 1, 4]), 'body'),
+    P(box(W * 0.84, roofH, cabinL * 0.72, 0, H - roofH / 2, cabinZ - cabinL * 0.02, [4, 2, 5]), 'body', false),
+    // Front and rear windscreens (thin, translucent panes).
+    P(box(W * 0.70, paneH, 0.025, 0, paneY + cabinH * 0.04, cabinZ + cabinL * 0.39, [4, 3, 1]), 'glass', false),
+    P(box(W * 0.68, paneH * 0.92, 0.025, 0, paneY, cabinZ - cabinL * 0.39, [4, 3, 1]), 'glass', false),
+    // Side windows are transparent panels on both sides, split into front/rear sections.
+    ...[-1, 1].flatMap((sx) => [
+      P(box(0.022, paneH * 0.9, sidePaneL * 0.47, sx * W * 0.405, paneY, cabinZ + cabinL * 0.13, [1, 3, 4]), 'glass', false),
+      P(box(0.022, paneH * 0.9, sidePaneL * 0.42, sx * W * 0.405, paneY, cabinZ - cabinL * 0.22, [1, 3, 4]), 'glass', false),
+      P(box(pillarW, cabinH * 0.88, pillarW, sx * W * 0.405, bodyTop + cabinH * 0.45, cabinZ + cabinL * 0.43, [1, 3, 1]), 'body', false),
+      P(box(pillarW, cabinH * 0.88, pillarW, sx * W * 0.405, bodyTop + cabinH * 0.45, cabinZ - cabinL * 0.42, [1, 3, 1]), 'body', false),
+      P(box(pillarW * 0.8, cabinH * 0.86, pillarW, sx * W * 0.405, bodyTop + cabinH * 0.44, cabinZ - cabinL * 0.04, [1, 3, 1]), 'body', false),
+    ]),
+    // Cabin interior: dashboard, steering wheel, front seats and visible seated occupants.
+    P(box(W * 0.72, 0.12, 0.22, 0, bodyTop + 0.12, cabinZ + cabinL * 0.30, [3, 2, 2]), 'interior', false),
+    P(box(W * 0.12, 0.07, 0.08, -W * 0.20, bodyTop + 0.16, cabinZ + cabinL * 0.31, [2, 1, 1]), 'dark', false),
+    P(new THREE.TorusGeometry(0.105, 0.018, 6, 14).rotateY(Math.PI / 2).translate(-W * 0.22, bodyTop + 0.30, cabinZ + cabinL * 0.30), 'dark', false),
+    ...[-1, 1].flatMap((sx) => {
+      const seatX = sx * W * 0.19
+      const seatZ = cabinZ + cabinL * 0.02
+      const headX = seatX
+      return [
+        P(box(W * 0.17, 0.16, 0.18, seatX, bodyTop + 0.18, seatZ, [2, 2, 2]), 'seat', false),
+        P(box(W * 0.17, 0.27, 0.07, seatX, bodyTop + 0.36, seatZ - 0.045, [2, 3, 1]), 'seat', false),
+        P(cyl(0.065, 0.075, 0.24, headX, bodyTop + 0.40, seatZ + 0.12, 10), 'clothes', false),
+        P(ball(0.075, headX, Math.min(H - 0.16, bodyTop + 0.57), seatZ + 0.13), 'skin', false),
+        P(box(0.055, 0.20, 0.055, headX - 0.085, bodyTop + 0.32, seatZ + 0.13, [1, 2, 1]), 'clothes', false),
+        P(box(0.055, 0.20, 0.055, headX + 0.085, bodyTop + 0.32, seatZ + 0.13, [1, 2, 1]), 'clothes', false),
+      ]
+    }),
     P(box(W * 1.02, 0.16, 0.14, 0, clear + 0.14, L / 2 - 0.05, [4, 2, 1]), 'dark'),
     P(box(W * 1.02, 0.16, 0.14, 0, clear + 0.14, -L / 2 + 0.05, [4, 2, 1]), 'dark'),
     P(box(W * 0.42, 0.13, 0.05, 0, clear + bodyH * 0.6, L / 2 + 0.01, [4, 1, 1]), 'dark'),
@@ -68,9 +100,32 @@ function buildCar(s) {
     P(box(W * 0.2, 0.12, 0.05, -W * 0.34, clear + bodyH * 0.72, -L / 2 - 0.01, [2, 1, 1]), 'tail'),
     P(box(W * 0.2, 0.12, 0.05, W * 0.34, clear + bodyH * 0.72, -L / 2 - 0.01, [2, 1, 1]), 'tail'),
   ]
-  for (const sx of [-1, 1]) for (const sz of [-1, 1]) parts.push(P(wheel(r, 0.22, sx * (W / 2 - 0.09), sz * L * 0.32), 'dark', false))
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) parts.push(P(wheel(rWheel(s), 0.22, sx * (W / 2 - 0.09), sz * L * 0.32), 'dark', false))
+
+  // Body-specific silhouettes so the catalogue doesn't render every road car as the same shape.
+  if (type === 'sedan') {
+    parts.push(P(box(W * 0.88, 0.22, L * 0.22, 0, bodyTop * 0.82, -L * 0.34, [3, 2, 3]), 'body'))
+    parts.push(P(box(W * 0.84, 0.14, L * 0.2, 0, clear + bodyH * 0.52, L * 0.34, [3, 2, 2]), 'body'))
+  } else if (type === 'suv') {
+    parts.push(P(box(W * 0.88, 0.08, cabinL * 0.76, 0, H + 0.035, cabinZ, [3, 1, 4]), 'dark', false))
+    for (const sx of [-1, 1]) parts.push(P(box(0.045, 0.06, cabinL * 0.78, sx * W * 0.34, H + 0.08, cabinZ, [1, 1, 4]), 'accent', false))
+    parts.push(P(box(W * 1.015, 0.16, L * 0.72, 0, 0.29, 0, [3, 1, 4]), 'dark', false))
+  } else if (type === 'van') {
+    parts.push(P(box(W * 0.94, cabinH * 0.8, cabinL * 0.62, 0, bodyTop + cabinH * 0.44, cabinZ - cabinL * 0.08, [3, 3, 4]), 'body', false))
+    parts.push(P(box(W * 0.73, cabinH * 0.55, 0.025, 0, bodyTop + cabinH * 0.48, cabinZ + cabinL * 0.31, [3, 2, 1]), 'glass', false))
+  } else if (type === 'pickup') {
+    // Open cargo bed with a visible floor and raised rails behind the passenger cabin.
+    const bedZ = -L * 0.31
+    parts.push(P(box(W * 0.78, 0.08, L * 0.34, 0, bodyTop + 0.07, bedZ, [2, 1, 3]), 'cargo', false))
+    for (const sx of [-1, 1]) parts.push(P(box(0.08, 0.34, L * 0.36, sx * W * 0.43, bodyTop + 0.22, bedZ, [1, 2, 3]), 'body', false))
+    parts.push(P(box(W * 0.86, 0.32, 0.08, 0, bodyTop + 0.21, bedZ - L * 0.18, [2, 2, 1]), 'body', false))
+  } else if (type === 'hatch_s' || type === 'hatch_m') {
+    parts.push(P(box(W * 0.84, 0.12, L * 0.12, 0, bodyTop * 0.96, -L * 0.39, [3, 1, 2]), 'body'))
+  }
   return parts
 }
+
+function rWheel(s) { return s.high ? 0.36 : 0.31 }
 
 function buildTruck(s) {
   const { L, W } = s
@@ -137,7 +192,9 @@ function rodBetween(a, b, radius, mat) {
   const va = new THREE.Vector3(...a), vb = new THREE.Vector3(...b)
   const delta = vb.clone().sub(va)
   const geo = new THREE.CylinderGeometry(radius, radius, delta.length(), 8)
-  geo.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), delta.clone().normalize())
+  // BufferGeometry has no quaternion property; rotate the vertices directly.
+  const rotation = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), delta.clone().normalize())
+  geo.applyQuaternion(rotation)
   geo.translate(...va.clone().add(vb).multiplyScalar(0.5).toArray())
   return P(geo, mat, false)
 }
@@ -177,6 +234,7 @@ function buildPerson() {
 
 export function buildProcedural(type) {
   const s = CATALOG[type]
+  if (!s) throw new Error(`Unknown ForensiTwin model type: ${type}`)
   let parts
   switch (s.kind) {
     case 'truck': parts = buildTruck(s); break
@@ -184,9 +242,22 @@ export function buildProcedural(type) {
     case 'moto': parts = buildMoto(s); break
     case 'person': parts = buildPerson(s); break
     case 'bicycle': parts = buildBicycle(s); break
-    default: parts = buildCar(s)
+    default: parts = buildCar(s, type)
   }
-  for (const p of parts) p.orig = p.geo.attributes.position.array.slice()
+  for (const p of parts) {
+    const position = p.geo?.attributes?.position
+    if (!position || !position.array || position.array.length === 0) {
+      p.geo?.dispose?.()
+      throw new Error(`Invalid geometry generated for ${type}`)
+    }
+    for (let i = 0; i < position.array.length; i++) {
+      if (!Number.isFinite(position.array[i])) {
+        p.geo.dispose()
+        throw new Error(`Non-finite geometry generated for ${type}`)
+      }
+    }
+    p.orig = position.array.slice()
+  }
   return parts
 }
 
@@ -223,7 +294,9 @@ export function makeMaterials(color) {
     body: new THREE.MeshStandardMaterial({ color, metalness: 0.35, roughness: 0.45 }),
     accent: new THREE.MeshStandardMaterial({ color, metalness: 0.3, roughness: 0.5 }),
     cargo: new THREE.MeshStandardMaterial({ color: '#d9dde2', roughness: 0.7 }),
-    glass: new THREE.MeshStandardMaterial({ color: '#0d1620', metalness: 0.7, roughness: 0.12 }),
+    glass: new THREE.MeshPhysicalMaterial({ color: '#79b8d4', metalness: 0.05, roughness: 0.18, transparent: true, opacity: 0.28, transmission: 0.12, thickness: 0.04, depthWrite: false }),
+    interior: new THREE.MeshStandardMaterial({ color: '#343a40', roughness: 0.82 }),
+    seat: new THREE.MeshStandardMaterial({ color: '#20252b', roughness: 0.9 }),
     dark: new THREE.MeshStandardMaterial({ color: '#15181c', roughness: 0.85 }),
     headlight: new THREE.MeshStandardMaterial({ color: '#fff3c4', emissive: '#fff3c4', emissiveIntensity: 0.6 }),
     tail: new THREE.MeshStandardMaterial({ color: '#7a0f14', emissive: '#ff1a1a', emissiveIntensity: 0.5 }),
