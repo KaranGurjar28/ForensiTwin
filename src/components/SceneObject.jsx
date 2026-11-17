@@ -6,40 +6,49 @@ import { useStore } from '../store.js'
 import { CATALOG } from '../lib/catalog.js'
 import { bearingToRotY, wrap360, DEG, round } from '../lib/geo.js'
 
-function PersonModel({ color, posture = 'upright' }) {
-  const lying = ['prone-front', 'prone-back', 'side-lying'].includes(posture)
-  const rotZ = posture === 'prone-back' ? -Math.PI / 2 : lying ? Math.PI / 2 : 0
-  const scaleY = posture === 'seated' ? 0.62 : posture === 'crouched' ? 0.78 : 1
+function PersonModel({ color, pose = 'standing' }) {
+  const lying = pose.startsWith('lying')
+  const seated = pose === 'seated'
+  const kneeling = pose === 'kneeling'
+  const crouched = pose === 'crouched'
+  const roll = pose === 'lying-back' ? Math.PI/2 : pose === 'lying-front' ? -Math.PI/2 : 0
+  const side = pose === 'lying-side' ? Math.PI/2 : 0
+  const rootHeight = lying ? 0.23 : crouched ? 0.56 : kneeling ? 0.66 : seated ? 0.62 : 0.90
   return (
-    <group rotation={[0, 0, rotZ]} scale={[1, scaleY, 1]} position={[0, lying ? 0.08 : 0, 0]}>
-      <mesh position={[0, 0.85, 0]} castShadow>
-        <capsuleGeometry args={[0.16, 0.72, 4, 8]} />
+    // Pivot at hips; limbs are independently visible so posture is not a rotated solid cylinder.
+    <group position={[0,rootHeight,0]} rotation={[roll,0,side]}>
+      <mesh position={[0,0.22,0]} castShadow>
+        <capsuleGeometry args={[0.20,0.55,4,10]} />
         <meshStandardMaterial color={color} roughness={0.85} />
       </mesh>
-      <mesh position={[0, 1.55, 0]} castShadow>
-        <sphereGeometry args={[0.13, 14, 10]} />
-        <meshStandardMaterial color="#c99a76" roughness={0.85} />
+      <mesh position={[0,0.72,0]} castShadow>
+        <sphereGeometry args={[0.14,14,10]} />
+        <meshStandardMaterial color="#c99a76" roughness={0.88} />
       </mesh>
-      <mesh position={[-0.1, 0.2, 0]} castShadow>
-        <boxGeometry args={[0.09, 0.4, 0.1]} />
-        <meshStandardMaterial color="#222831" />
-      </mesh>
-      <mesh position={[0.1, 0.2, 0]} castShadow>
-        <boxGeometry args={[0.09, 0.4, 0.1]} />
-        <meshStandardMaterial color="#222831" />
-      </mesh>
+      {[-1,1].map(sign=><group key={sign}>
+        <mesh position={[sign*0.27,0.12,0.01]} rotation-z={sign*(crouched ? 0.75 : 0.14)} castShadow>
+          <capsuleGeometry args={[0.065,0.43,3,8]} />
+          <meshStandardMaterial color={color} roughness={0.86} />
+        </mesh>
+        <mesh position={[sign*0.12,seated ? -0.19 : kneeling ? -0.2 : -0.35,seated ? 0.27 : 0]} rotation-x={seated ? -Math.PI/2 : kneeling ? 0.70 : crouched ? 0.55 : 0} castShadow>
+          <capsuleGeometry args={[0.086,0.48,3,8]} />
+          <meshStandardMaterial color="#252c39" roughness={0.85} />
+        </mesh>
+      </group>)}
     </group>
   )
 }
 
-function AnimalModel({ type, color, posture = 'standing' }) {
-  const lying = ['lying', 'lying-left', 'lying-right'].includes(posture)
+function AnimalModel({ type, color, pose='standing' }) {
   const cow = type === 'cow'
   const bodyL = cow ? 1.25 : 0.58
   const bodyH = cow ? 0.62 : 0.3
   const legH = cow ? 0.48 : 0.22
+  const down = pose.startsWith('lying')
+  const lowered = pose === 'seated' || pose === 'kneeling' || pose === 'crouched'
+  const rot = pose === 'lying-front' ? -Math.PI/2 : down ? Math.PI/2 : 0
   return (
-    <group rotation={[0, 0, posture === 'lying-right' ? -Math.PI / 2 : lying ? Math.PI / 2 : 0]} position={[0, lying ? 0.12 : 0, 0]}>
+    <group position={[0, down ? 0.12 : lowered ? -legH * 0.42 : 0, 0]} rotation={[0,0,rot]}>
       <mesh position={[0, legH + bodyH / 2, 0]} castShadow>
         <boxGeometry args={[cow ? 0.62 : 0.32, bodyH, bodyL]} />
         <meshStandardMaterial color={color} roughness={0.9} />
@@ -66,10 +75,10 @@ function ObjectModel({ v, spec }) {
   const c = v.color || spec.color
   switch (v.type) {
     case 'person':
-      return <PersonModel color={c} posture={v.posture || 'upright'} />
+      return <PersonModel color={c} pose={v.__renderPose || v.posture || 'standing'} />
     case 'dog':
     case 'cow':
-      return <AnimalModel type={v.type} color={c} posture={v.posture || 'standing'} />
+      return <AnimalModel type={v.type} color={c} pose={v.__renderPose || v.posture || 'standing'} />
     case 'tree':
       return (
         <group>
@@ -220,24 +229,18 @@ export default function SceneObject({ v }) {
   const gizmo = useStore((s) => s.gizmo)
   const labels = useStore((s) => s.layers.labels)
   const heightAt = useStore((s) => s.heightAt)
-  const afterImpact = useStore((s) => s.time >= 0)
-  const physics = useStore((s) => s.physics)
-
+  const beforeImpact = useStore((s) => s.time < 0)
+  const personOrAnimal = spec?.category === 'person' || spec?.category === 'animal'
+  const renderPose = beforeImpact ? (v.posture || 'standing') : (v.postCrashPosture || v.posture || 'standing')
+  const shown = personOrAnimal ? { ...v, __renderPose:renderPose } : v
   useFrame(() => {
-    const g = groupRef.current
-    if (!g) return
-    const st = useStore.getState()
-    const isTarget = st.physics?.collisionTargetKind === 'object' && st.physics?.collisionTargetId === v.id
-    if (isTarget && st.time > 0 && (v.type === 'person' || v.type === 'dog' || v.type === 'cow')) {
-      const primary = st.vehicles.find((item) => item.id === st.physics?.primaryVehicleId) || st.vehicles[0]
-      const heading = Number(v.postImpactHeading ?? primary?.heading ?? v.heading ?? 0)
-      const a = heading * Math.PI / 180
-      const distance = Math.min(st.time * 2.2, Number(v.postImpactDistance || 2.5))
-      const x = v.x + Math.sin(a) * distance
-      const z = v.z + Math.cos(a) * distance
-      g.position.set(x, st.heightAt(x, z), z)
-      g.rotation.set(0, bearingToRotY(heading), v.type === 'person' ? Math.min(0.25, st.time * 0.12) : 0)
-    }
+    const g=groupRef.current
+    if(!g || !personOrAnimal) return
+    const st=useStore.getState()
+    const f=Math.max(0,Math.min(1,st.time/1.5))
+    const x=v.x + (Number(v.postCrashOffsetX)||0)*f
+    const z=v.z + (Number(v.postCrashOffsetZ)||0)*f
+    g.position.set(x,st.heightAt(x,z),z)
   })
 
   const onChange = () => {
@@ -269,7 +272,7 @@ export default function SceneObject({ v }) {
           st.select(v.id)
         }}
       >
-        <ObjectModel v={{ ...v, posture: afterImpact && ['person', 'dog', 'cow'].includes(v.type) && physics?.collisionTargetId === v.id && physics?.collisionTargetKind === 'object' ? (v.postImpactPosture || (v.type === 'person' ? 'prone-front' : 'lying')) : (v.posture || (v.type === 'person' ? 'upright' : 'standing')) }} spec={spec} />
+        <ObjectModel v={shown} spec={spec} />
         {selected && <SelectionRing spec={spec} />}
         {labels && (
           <Html position={[0, spec.H + 0.45, 0]} center style={{ pointerEvents: 'none' }} zIndexRange={[20, 0]}>

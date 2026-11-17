@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import { Html, Line } from '@react-three/drei'
 import { useStore, MARKER_KINDS } from '../store.js'
@@ -6,7 +6,7 @@ import { CATALOG } from '../lib/catalog.js'
 import { bearingToRotY, bearingToVec } from '../lib/geo.js'
 import { poseAt, postSpeedOf, ms2kmh } from '../lib/physics.js'
 
-const offsetMat = (f) => ({ polygonOffset: true, polygonOffsetFactor: f, polygonOffsetUnits: f, depthTest: false, depthWrite: false })
+const offsetMat = (f) => ({ polygonOffset: true, polygonOffsetFactor: f, polygonOffsetUnits: f })
 
 function Skids() {
   const vehicles = useStore((s) => s.vehicles)
@@ -110,7 +110,7 @@ function GroundDecal({ kind, length = 1 }) {
   // materials. Small samples are deliberately exaggerated for scene readability.
   const span = Math.max(0.65, Math.min(2.4, Number(length) || 1))
   const decalMaterial = (color, opacity = 0.96) => (
-    <meshBasicMaterial color={color} transparent opacity={opacity} side={2} depthTest={false} depthWrite={false} polygonOffset polygonOffsetFactor={-8} polygonOffsetUnits={-8} />
+    <meshBasicMaterial color={color} transparent opacity={opacity} depthWrite={false} depthTest={false} side={2} polygonOffset polygonOffsetFactor={-4} />
   )
 
   if (kind === 'blood') {
@@ -161,7 +161,7 @@ function GroundDecal({ kind, length = 1 }) {
   if (kind === 'impact') return <group position={[0, 0.065, 0]}>
     <mesh rotation={[-Math.PI / 2, 0, 0]}><ringGeometry args={[0.32, 0.46, 32]} />{decalMaterial('#fff000')}</mesh>
     <mesh rotation={[-Math.PI / 2, 0, 0]}><ringGeometry args={[0.18, 0.26, 32]} />{decalMaterial('#ff2418')}</mesh>
-    <mesh position={[0, 0.04, 0]}><sphereGeometry args={[0.08, 12, 10]} /><meshBasicMaterial color="#fff000" depthTest={false} depthWrite={false} /></mesh>
+    <mesh position={[0, 0.04, 0]}><sphereGeometry args={[0.08, 12, 10]} /><meshBasicMaterial color="#fff000" /></mesh>
   </group>
   if (kind === 'glass') {
     return <group position={[0, 0.055, 0]} rotation={[-Math.PI / 2, 0, 0]} scale={span}>
@@ -170,7 +170,7 @@ function GroundDecal({ kind, length = 1 }) {
         const r = 0.08 + (i % 6) * 0.065
         return <mesh key={i} position={[Math.cos(a) * r, Math.sin(a) * r, 0.004 + i * 0.0002]} rotation={[0, 0, a]}>
           <circleGeometry args={[0.045 + (i % 3) * 0.012, 3]} />
-          <meshBasicMaterial color={i % 2 ? '#a9f7ff' : '#f2ffff'} transparent opacity={0.98} side={2} depthTest={false} depthWrite={false} />
+          <meshStandardMaterial depthTest={false} depthWrite={false} color={i % 2 ? '#a9f7ff' : '#f2ffff'} emissive="#276f80" emissiveIntensity={0.35} metalness={0.15} roughness={0.08} side={2} />
         </mesh>
       })}
       <mesh><ringGeometry args={[0.43, 0.48, 32]} />{decalMaterial('#47dfff', 0.9)}</mesh>
@@ -186,13 +186,41 @@ function GroundDecal({ kind, length = 1 }) {
     <mesh position={[0, 0, 0.004]} rotation={[0, 0, 0.3]}><planeGeometry args={[0.11, 0.72]} />{decalMaterial('#171717')}</mesh>
   </group>
   if (kind === 'debris') return <group position={[0, 0.07, 0]}>
-    {Array.from({ length: 9 }, (_, i) => <mesh key={i} position={[Math.cos(i * 2.4) * (0.18 + (i % 3) * 0.11), 0.02 + (i % 3) * 0.015, Math.sin(i * 2.4) * (0.18 + (i % 2) * 0.12)]} rotation={[i * 0.3, i * 0.6, i * 0.2]}><dodecahedronGeometry args={[0.09 + (i % 3) * 0.025, 0]} /><meshBasicMaterial color={['#e6d7b8', '#b8c4cf', '#31353a', '#c92d2d'][i % 4]} depthTest={false} depthWrite={false} /></mesh>)}
+    {Array.from({ length: 9 }, (_, i) => <mesh key={i} position={[Math.cos(i * 2.4) * (0.18 + (i % 3) * 0.11), 0.02 + (i % 3) * 0.015, Math.sin(i * 2.4) * (0.18 + (i % 2) * 0.12)]} rotation={[i * 0.3, i * 0.6, i * 0.2]}><dodecahedronGeometry args={[0.09 + (i % 3) * 0.025, 0]} /><meshStandardMaterial depthTest={false} depthWrite={false} color={['#e6d7b8', '#b8c4cf', '#31353a', '#c92d2d'][i % 4]} roughness={0.75} /></mesh>)}
   </group>
   if (kind === 'rest') return <group position={[0, 0.06, 0]} rotation={[-Math.PI / 2, 0, 0]}>
     <mesh><ringGeometry args={[0.42, 0.5, 32]} />{decalMaterial('#f5d000')}</mesh>
     <mesh><ringGeometry args={[0.22, 0.28, 32]} />{decalMaterial('#ff3b30')}</mesh>
   </group>
-  if (kind === 'seatbelt' || kind === 'airbag' || kind === 'cctv' || kind === 'witness' || kind === 'photo' || kind === 'other') {
+  // CCTV marker represents a physical camera and pole, not live video access.
+  // Actual footage is supplied separately through the Evidence tab.
+  if (kind === 'cctv') return <group>
+    <mesh position={[0, 2.65, 0]} castShadow>
+      <cylinderGeometry args={[0.11, 0.17, 5.3, 10]}/>
+      <meshStandardMaterial color="#5b6775" metalness={0.55} roughness={0.55}/>
+    </mesh>
+    <mesh position={[0.53, 5.15, 0]} castShadow>
+      <boxGeometry args={[1.1, 0.12, 0.13]}/>
+      <meshStandardMaterial color="#4e5d6d" metalness={0.5} roughness={0.5}/>
+    </mesh>
+    <mesh position={[1.05, 5.1, 0]} rotation={[0, 0.15, 0.08]} castShadow>
+      <boxGeometry args={[0.53, 0.27, 0.32]}/>
+      <meshStandardMaterial color="#dce4ed" metalness={0.22} roughness={0.5}/>
+    </mesh>
+    <mesh position={[1.33,5.1,0]} rotation={[0,0,-Math.PI/2]}>
+      <cylinderGeometry args={[0.075,0.075,0.06,18]}/>
+      <meshStandardMaterial color="#0b2436" metalness={0.3} roughness={0.18}/>
+    </mesh>
+    <mesh position={[1.25,5.22,-0.11]}>
+      <sphereGeometry args={[0.03,8,6]}/>
+      <meshBasicMaterial color="#ff4238"/>
+    </mesh>
+    <mesh position={[0,0.06,0]} rotation-x={-Math.PI/2}>
+      <ringGeometry args={[0.30,0.40,24]}/>
+      {decalMaterial('#9d59ff')}
+    </mesh>
+  </group>
+  if (kind === 'seatbelt' || kind === 'airbag' || kind === 'witness' || kind === 'photo' || kind === 'other') {
     const color = kind === 'seatbelt' ? '#29a7ff' : kind === 'airbag' ? '#f4f4f4' : kind === 'cctv' ? '#9a5cff' : kind === 'witness' ? '#35d07f' : kind === 'photo' ? '#ffb12b' : '#ffffff'
     return <group position={[0, 0.08, 0]}>
       <mesh rotation={[-Math.PI / 2, 0, 0]}><ringGeometry args={[0.24, 0.33, 24]} />{decalMaterial(color)}</mesh>
@@ -208,16 +236,53 @@ function GroundDecal({ kind, length = 1 }) {
 
 function Markers() {
   const markers = useStore((s) => s.markers)
+  const footage = useStore((s) => s.cameraFootage)
   const heightAt = useStore((s) => s.heightAt)
+  const [preview, setPreview] = useState(null)
+  const openPreview = (e, m) => {
+    e.stopPropagation()
+    if (preview?.id === m.id) { setPreview(null); return }
+    const frame = m.kind === 'cctv' ? (footage || []).find(f=>f.cameraMarkerId===m.id && f.frame) : null
+    const uploaded = (m.images || []).find(im=>im.sourceType==='uploaded-photograph' && im.src)
+    const captured = (m.images || []).find(im=>im.sourceType==='simulated-camera-view' && im.src)
+    let src = frame?.frame || uploaded?.src || captured?.src || null
+    let label = frame ? 'User-supplied CCTV frame (provenance unverified)'
+      : uploaded ? 'User-supplied photograph' : captured ? 'Saved simulated camera view' : 'Simulated live scene preview'
+    if (!src && (m.kind === 'cctv' || m.kind === 'photo')) {
+      try { src = useStore.getState().screenshotFn?.({marker:m,quality:0.78}) || null }
+      catch (error) { console.warn('Marker view capture failed:',error) }
+    }
+    setPreview({id:m.id,src,label})
+  }
   return markers.map((m) => {
     const y = heightAt(m.x, m.z)
     const label = MARKER_KINDS[m.kind] || m.kind || 'Evidence'
     return (
-      <group key={m.id} position={[m.x, y + 0.08, m.z]} renderOrder={1000}>
-        <GroundDecal kind={m.kind} length={m.length || 1} />
+      <group key={m.id} position={[m.x, y, m.z]}
+        onClick={e=>{ if(m.kind==='cctv' || m.kind==='photo')openPreview(e,m) }}>
+
+        {m.kind === 'cctv'
+          ? <group rotation={[0, Math.PI / 2 - (Number(m.heading || 0) * Math.PI / 180), 0]}>
+              <GroundDecal kind={m.kind} length={m.length || 1} />
+            </group>
+          : <GroundDecal kind={m.kind} length={m.length || 1} />}
         {/* Move the evidence tent away from the trace so it doesn't cover the evidence graphic. */}
         <group position={[0.72, 0, 0.42]}><EvidenceTent n={m.n} /></group>
-        <Html position={[0, 1.05, 0]} center distanceFactor={11} style={{ pointerEvents: 'none' }} zIndexRange={[25, 0]}>
+        {preview?.id === m.id && (m.kind === 'cctv' || m.kind === 'photo') && (
+          <Html position={[0, m.kind === 'cctv' ? 8 : 2.5, 0]} center zIndexRange={[95, 0]} style={{pointerEvents:'auto'}}>
+            <div onPointerDown={e=>e.stopPropagation()} onClick={e=>e.stopPropagation()}
+              style={{background:'#13202e',padding:9,border:'2px solid #f4c30a',borderRadius:9,width:255,color:'#fff',boxShadow:'0 8px 30px #0009'}}>
+              <div style={{display:'flex',justifyContent:'space-between',gap:8,fontSize:12,fontWeight:800}}>
+                <span>{MARKER_KINDS[m.kind]} #{m.n}</span>
+                <button type="button" onClick={()=>setPreview(null)} style={{border:0,background:'#334353',color:'#fff',borderRadius:4,cursor:'pointer'}}>Close</button>
+              </div>
+              {preview.src ? <img src={preview.src} alt={preview.label} style={{width:'100%',height:140,objectFit:'contain',marginTop:6,background:'#030a11'}} />
+                : <p style={{fontSize:11}}>No frame is available. Use the Evidence tab to attach a photograph or capture a simulated view.</p>}
+              <p style={{fontSize:10,color:'#f5d783',margin:'6px 0 0'}}>{preview.label}. Recorded frames must come from an authorised source.</p>
+            </div>
+          </Html>
+        )}
+        <Html position={m.kind === 'cctv' ? [0, 6.4, 0] : [0, 1.05, 0]} center distanceFactor={11} style={{ pointerEvents: 'none' }} zIndexRange={[25, 0]}>
           <div className="ft-marker-label" style={{ background: '#111827', color: '#fff', border: '2px solid #f5c400', padding: '4px 7px', borderRadius: 5, fontWeight: 800, fontSize: 12, whiteSpace: 'nowrap', boxShadow: '0 2px 8px #0008' }}>{m.n}. {label}</div>
         </Html>
       </group>

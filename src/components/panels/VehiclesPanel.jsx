@@ -54,6 +54,7 @@ function Slider({ label, value, onChange, min = 0, max = 1, step = 0.01, display
 function VehicleCard({ v, selected }) {
   const spec = CATALOG[v.type]
   const isVehicle = spec?.category === 'vehicle'
+  const editDamageOnClick = useStore(s => s.editDamageOnClick)
   const {
     select, updateVehicle, changeType, removeVehicle, duplicateVehicle,
     updateObject, changeObjectType, removeObject, duplicateObject, nudgeHeading,
@@ -92,14 +93,6 @@ function VehicleCard({ v, selected }) {
             </select>
           </label>
 
-          <label className="ft-field ft-color-field">
-            <span>Scene colour <b>{v.color || spec?.color}</b></span>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-              <input aria-label={`Choose ${v.name} colour`} type="color" value={/^#[0-9a-fA-F]{6}$/.test(v.color || '') ? v.color : (spec?.color || '#777777')} onChange={(e) => update(v.id, { color: e.target.value })} style={{ width: 54, height: 32, padding: 2, border: '1px solid var(--rule)', borderRadius: 5, background: '#fff', cursor: 'pointer' }} />
-              <span className="ft-note" style={{ margin: 0 }}>Updates the 3D model and scene label.</span>
-            </div>
-          </label>
-
           <div className="ft-row2">
             <NumField label="X (m, east+)" value={v.x} step={0.1} onChange={(x) => update(v.id, { x })} />
             <NumField label="Z (m, south+)" value={v.z} step={0.1} onChange={(z) => update(v.id, { z })} />
@@ -120,12 +113,6 @@ function VehicleCard({ v, selected }) {
               <TextField label="License plate" value={v.licensePlate} placeholder="Enter observed registration" onChange={(licensePlate) => update(v.id, { licensePlate })} />
               <TextField label="VIN / chassis number" value={v.vin} placeholder="Enter verified VIN; leave blank if unknown" onChange={(vin) => update(v.id, { vin })} />
               <label className="ft-field">
-                <span>Visible occupants in vehicle</span>
-                <select value={Math.max(0, Math.min(8, Number(v.occupantCount || 0)))} onChange={(e) => update(v.id, { occupantCount: Number(e.target.value) })}>
-                  {[0, 1, 2, 3, 4, 5, 6, 7, 8].map((count) => <option key={count} value={count}>{count === 0 ? 'No occupant models shown' : `${count} occupant${count === 1 ? '' : 's'}`}</option>)}
-                </select>
-              </label>
-              <label className="ft-field">
                 <span>Recorded speedometer</span>
                 <div className="ft-numwrap">
                   <input
@@ -144,8 +131,19 @@ function VehicleCard({ v, selected }) {
                 <>
                   <div className="ft-divider" />
                   <div className="ft-subhead">Damage assessment</div>
-                  <label className="ft-field"><span>Damage direction</span><select value={v.damageSide || 'front'} onChange={(e) => update(v.id, { damageSide: e.target.value })}><option value="front">Front / frontal</option><option value="rear">Rear / rear-end</option><option value="left">Left side</option><option value="right">Right side</option></select></label>
-                  <Slider label="Crush extent " value={v.crush} onChange={(crush) => update(v.id, { crush })} display={`${Math.round(v.crush * 100)}%`} />
+                  <label className="ft-field"><span>Damage location — visible in 3D</span>
+                    <select value={v.damageZone || 'front'} onChange={e=>update(v.id,{damageZone:e.target.value})}>
+                      <option value="front">Front</option><option value="rear">Rear</option>
+                      <option value="left">Left side</option><option value="right">Right side</option>
+                      <option value="roof">Roof</option>
+                    </select>
+                  </label>
+                  <label className="ft-check" style={{marginBottom:8}}>
+                    <input type="checkbox" checked={editDamageOnClick}
+                      onChange={e=>useStore.getState().setEditDamageOnClick(e.target.checked)} />
+                    <span>Click a vehicle body area in 3D to choose damage zone</span>
+                  </label>
+                  <Slider label="Damage severity " value={v.crush} onChange={(crush) => update(v.id, { crush })} display={`${Math.round(v.crush * 100)}%`} />
                   <Slider label="Impact offset " value={v.impactOffset} min={-1} max={1} onChange={(impactOffset) => update(v.id, { impactOffset })} display={v.impactOffset === 0 ? 'centred' : v.impactOffset > 0 ? `${Math.round(v.impactOffset * 100)}% right` : `${Math.round(-v.impactOffset * 100)}% left`} />
                 </>
               )}
@@ -168,17 +166,33 @@ function VehicleCard({ v, selected }) {
           ) : (
             <>
               <div className="ft-divider" />
-              <div className="ft-subhead">{spec.category === 'person' ? 'Body position & movement' : spec.category === 'animal' ? 'Animal position' : 'Obstacle details'}</div>
-              {spec.category === 'person' && <>
-                <label className="ft-field"><span>Body posture</span><select value={v.posture || 'upright'} onChange={(e) => update(v.id, { posture: e.target.value })}><option value="upright">Standing upright</option><option value="seated">Seated</option><option value="crouched">Crouched</option><option value="prone-front">Lying face down</option><option value="prone-back">Lying face up</option><option value="side-lying">Lying on side</option></select></label>
-                <label className="ft-field"><span>Post-impact posture</span><select value={v.postImpactPosture || 'prone-front'} onChange={(e) => update(v.id, { postImpactPosture: e.target.value })}><option value="prone-front">Face down</option><option value="prone-back">Face up</option><option value="side-lying">On side</option><option value="seated">Seated / slumped</option></select></label>
+              <div className="ft-subhead">{spec.category === 'person' ? 'Person details' : spec.category === 'animal' ? 'Animal details' : 'Obstacle details'}</div>
+              <p className="ft-field-note">This is a scene object, not a road vehicle. It is saved with the case but excluded from vehicle speed, skid, crush, and collision-pair calculations.</p>
+              {(spec.category === 'person' || spec.category === 'animal') && <>
+                <div className="ft-divider"/>
+                <div className="ft-subhead">Before / after collision body positioning</div>
+                <label className="ft-field"><span>Initial posture</span>
+                  <select value={v.posture || 'standing'} onChange={e=>update(v.id,{posture:e.target.value})}>
+                    <option value="standing">Standing</option><option value="seated">Seated</option>
+                    <option value="crouched">Crouched</option><option value="kneeling">Kneeling</option>
+                    <option value="lying-back">Lying on back</option><option value="lying-front">Lying face-down</option>
+                    <option value="lying-side">Lying on side</option>
+                  </select>
+                </label>
+                <label className="ft-field"><span>Post-impact posture (at T≥0)</span>
+                  <select value={v.postCrashPosture || 'standing'} onChange={e=>update(v.id,{postCrashPosture:e.target.value})}>
+                    <option value="standing">Standing</option><option value="seated">Seated</option>
+                    <option value="crouched">Crouched</option><option value="kneeling">Kneeling</option>
+                    <option value="lying-back">Lying on back</option><option value="lying-front">Lying face-down</option>
+                    <option value="lying-side">Lying on side</option>
+                  </select>
+                </label>
+                <div className="ft-row2">
+                  <NumField label="Post-impact east displacement" suffix="m" value={v.postCrashOffsetX||0} step={0.2} min={-100} max={100} onChange={postCrashOffsetX=>update(v.id,{postCrashOffsetX})}/>
+                  <NumField label="Post-impact south displacement" suffix="m" value={v.postCrashOffsetZ||0} step={0.2} min={-100} max={100} onChange={postCrashOffsetZ=>update(v.id,{postCrashOffsetZ})}/>
+                </div>
+                <p className="ft-field-note">These are manually selected illustrative postures, not biomechanical predictions or documented injuries.</p>
               </>}
-              {spec.category === 'animal' && <>
-                <label className="ft-field"><span>Animal posture</span><select value={v.posture || 'standing'} onChange={(e) => update(v.id, { posture: e.target.value })}><option value="standing">Standing</option><option value="lying">Lying on side</option><option value="lying-left">Lying left side</option><option value="lying-right">Lying right side</option></select></label>
-                <label className="ft-field"><span>Post-impact posture</span><select value={v.postImpactPosture || 'lying'} onChange={(e) => update(v.id, { postImpactPosture: e.target.value })}><option value="lying">Lying on side</option><option value="lying-left">Lying left side</option><option value="lying-right">Lying right side</option><option value="standing">Standing</option></select></label>
-              </>}
-              {['person', 'animal'].includes(spec.category) && <div className="ft-row2"><NumField label="Post-impact travel" value={v.postImpactDistance ?? 2.5} step={0.1} min={0} max={30} suffix="m" onChange={(postImpactDistance) => update(v.id, { postImpactDistance })} /><NumField label="Post-impact heading" value={v.postImpactHeading ?? v.heading ?? 0} step={1} min={0} max={360} suffix="°" onChange={(postImpactHeading) => update(v.id, { postImpactHeading })} /></div>}
-              {spec.category === 'obstacle' && <p className="ft-field-note">This scene object is saved and rendered separately. It is not treated as a road vehicle in vehicle-to-vehicle momentum calculations.</p>}
             </>
           )}
         </div>

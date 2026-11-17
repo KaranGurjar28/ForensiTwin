@@ -63,7 +63,7 @@ export default function CameraRig() {
       enableDamping
       dampingFactor={0.08}
       minDistance={3}
-      maxDistance={400}
+      maxDistance={Math.max(400,(useStore.getState().radius || 800) * 2.6)}
       maxPolarAngle={mode === 'top' ? 0.1 : Math.PI / 2 - 0.02}
       mouseButtons={{ LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN }}
     />

@@ -20,7 +20,7 @@ export default function Scene() {
     <Canvas
       key={sceneId}
       shadows
-      camera={{ position: [28, 22, 30], fov: 50, near: 0.1, far: 4000 }}
+      camera={{ position: [28, 22, 30], fov: 50, near: 0.1, far: 12000 }}
       gl={{ antialias: true, toneMapping: THREE.ACESFilmicToneMapping, toneMappingExposure: 1.05 }}
       dpr={[1, 1.75]}
       onPointerMissed={() => useStore.getState().select(null)}

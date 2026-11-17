@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import * as THREE from 'three'
 import { useStore } from '../store.js'
-import { buildWorld } from '../lib/osmGeometry.js' // consumes ForensiTwin-generated schematic geometry
+import { buildWorld } from '../lib/siteGeometry.js' // consumes investigator-traced geometry; no OSM network
 
 const Y = new THREE.Vector3(0, 1, 0)
 
@@ -21,11 +21,13 @@ function handleGroundClick(e) {
 function Ground() {
   const terrain = useStore((s) => s.terrain)
   const showTerrain = useStore((s) => s.layers.terrain)
+  const radius = useStore((s) => s.radius)
   const geo = useMemo(() => {
-    const g = new THREE.PlaneGeometry(1600, 1600, 80, 80)
+    const side = Math.max(600, radius * 2.7)
+    const g = new THREE.PlaneGeometry(side, side, 40, 40)
     g.rotateX(-Math.PI / 2)
     return g
-  }, [])
+  }, [radius])
   useLayoutEffect(() => {
     const pos = geo.attributes.position
     for (let i = 0; i < pos.count; i++) {
@@ -37,7 +39,7 @@ function Ground() {
   }, [geo, terrain, showTerrain])
   return (
     <mesh geometry={geo} receiveShadow onClick={handleGroundClick}>
-      <meshStandardMaterial color="#58664f" roughness={1} />
+      <meshStandardMaterial color="#8f9997" roughness={1} />
     </mesh>
   )
 }
@@ -125,7 +127,8 @@ export default function World() {
     () => (osm.data && osm.origin ? buildWorld(osm.data, osm.origin, { radius: osm.origin.radius, heightAt: terrain }) : null),
     [osm.data, osm.origin, terrain],
   )
-  const scatter = useMemo(() => (world ? world.scatter(greenery) : { trees: [], houses: [] }), [world, greenery])
+  // Google-only: never scatter fabricated houses/trees and pass them off as scene features.
+  const scatter = useMemo(() => ({ trees: [], houses: [] }), [world])
 
   useEffect(() => {
     if (!world) return

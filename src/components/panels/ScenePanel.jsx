@@ -40,7 +40,8 @@ export default function ScenePanel() {
             <div className="ft-mute">{worldStats.roads} road segments · {worldStats.buildings} buildings{worldStats.roadNames?.length ? ` · ${worldStats.roadNames.slice(0, 2).join(', ')}` : ''}</div>
           )}
         </div>
-        <button className="ft-linkbtn" onClick={() => setView('map')}>Change location</button>
+        <p className="ft-hint" style={{marginTop:8}}>Editable roads/buildings come only from investigator traces placed on the Google 3D map. Recheck the traced layout, road widths and heights against scene measurements. Google does not provide meshes to the reconstruction engine.</p>
+        <button className="ft-secondary" onClick={() => setView('map')}>Edit location and trace road/building geometry</button>
       </div>
 
       <div className="ft-block">

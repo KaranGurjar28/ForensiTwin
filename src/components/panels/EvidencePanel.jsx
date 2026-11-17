@@ -1,4 +1,5 @@
-import { useMemo } from 'react'
+import CameraFootagePanel from './CameraFootagePanel.jsx'
+import { useMemo, useState } from 'react'
 import { useStore, MARKER_KINDS } from '../../store.js'
 
 const STATUS_OPTIONS = [
@@ -131,7 +132,30 @@ function EvidenceField({ field, entry, onChange }) {
   )
 }
 
+// Browser-side resizing strips camera EXIF and avoids multi-megabyte case files.
+function imageFromFile(file) {
+  return new Promise((resolve, reject) => {
+    if (!file?.type?.startsWith('image/')) return reject(new Error('Select an image file.'))
+    if (file.size > 15_000_000) return reject(new Error('Image is larger than 15 MB.'))
+    const url = URL.createObjectURL(file)
+    const img = new Image()
+    img.onload = () => {
+      try {
+        const scale = Math.min(1, 1280 / Math.max(img.naturalWidth, img.naturalHeight))
+        const canvas = document.createElement('canvas')
+        canvas.width = Math.max(1, Math.round(img.naturalWidth * scale))
+        canvas.height = Math.max(1, Math.round(img.naturalHeight * scale))
+        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height)
+        resolve(canvas.toDataURL('image/jpeg', 0.84))
+      } catch (e) { reject(e) } finally { URL.revokeObjectURL(url) }
+    }
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Could not decode image.')) }
+    img.src = url
+  })
+}
+
 export default function EvidencePanel() {
+  const [imageError, setImageError] = useState('')
   const markers = useStore((s) => s.markers)
   const placing = useStore((s) => s.placing)
   const setPlacing = useStore((s) => s.setPlacing)
@@ -143,6 +167,36 @@ export default function EvidencePanel() {
   const clearRuler = useStore((s) => s.clearRuler)
   const evidenceAssessment = useStore((s) => s.evidenceAssessment || {})
   const updateEvidenceField = useStore((s) => s.updateEvidenceField)
+  const uploadPhoto = async (marker, file) => {
+    if (!file) return
+    setImageError('')
+    try {
+      if ((marker.images || []).length >= 18) throw new Error('Maximum 18 images per marker. Remove old images first.')
+      const src = await imageFromFile(file)
+      updateMarker(marker.id, { images: [ ...(marker.images || []), {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        src, sourceType: 'uploaded-photograph', name: file.name,
+        description: `Investigator-supplied photograph for evidence marker ${marker.n}`,
+        capturedAt: new Date().toISOString(),
+      } ] })
+    } catch (error) { setImageError(error.message || String(error)) }
+  }
+  const captureMarkerView = (marker) => {
+    setImageError('')
+    try {
+      const fn = useStore.getState().screenshotFn
+      if (typeof fn !== 'function') throw Error('Simulation 3D camera is not ready. Open Editable 3D first.')
+      const src = fn({ quality: 0.87, marker })
+      if (!src || !src.startsWith('data:image/')) throw Error('No image was returned from the simulation camera.')
+      updateMarker(marker.id, { images: [...(marker.images || []), {
+        id: `${Date.now()}-sim`, src, sourceType: 'simulated-camera-view',
+        name: `${marker.kind === 'cctv' ? 'CCTV pole' : 'Photo point'} ${marker.n} — simulated POV`,
+        description: `Illustrative reconstruction view from marker ${marker.n}; NOT actual CCTV/photo evidence`,
+        capturedAt: new Date().toISOString(),
+      }] })
+    } catch (error) { setImageError(error.message || String(error)) }
+  }
+
   const counts = useMemo(() => {
     const all = Object.values(evidenceAssessment)
     return {
@@ -184,6 +238,7 @@ export default function EvidencePanel() {
           ))}
         </div>
         {placing && <div className="ft-placing-note">Click the ground to place a "{MARKER_KINDS[placing]}" marker. <button onClick={() => setPlacing(null)}>Cancel</button></div>}
+        {imageError && <p role="alert" style={{color:"#be362a",fontSize:12}}>{imageError}</p>}
         <div className="ft-mlist">
           {markers.length === 0 && <p className="ft-empty">No scene markers yet.</p>}
           {markers.map((m) => (
@@ -198,20 +253,35 @@ export default function EvidencePanel() {
                 </button>
               </div>
               <input className="ft-mnote" placeholder="Evidence description / collection ID" value={m.note || ''} onChange={(e) => updateMarker(m.id, { note: e.target.value })} />
-              <div className="ft-row2 ft-marker-coords">
-                <label className="ft-field"><span>Scene X (m)</span><input type="number" step="0.1" value={Number(m.x || 0)} onChange={(e) => updateMarker(m.id, { x: Number(e.target.value) || 0 })} /></label>
-                <label className="ft-field"><span>Scene Z (m)</span><input type="number" step="0.1" value={Number(m.z || 0)} onChange={(e) => updateMarker(m.id, { z: Number(e.target.value) || 0 })} /></label>
-              </div>
-              <div className="ft-row2">
-                <label className="ft-field"><span>Mark direction</span><input type="number" min="0" max="360" step="5" value={Number(m.heading || 0)} onChange={(e) => updateMarker(m.id, { heading: Math.max(0, Math.min(360, Number(e.target.value) || 0)) })} /></label>
-                <label className="ft-field"><span>Mark length (m)</span><input type="number" min="0.2" max="18" step="0.5" value={Number(m.length || 0.5)} onChange={(e) => updateMarker(m.id, { length: Math.max(0.2, Math.min(18, Number(e.target.value) || 0.5)) })} /></label>
-              </div>
-              <div className="ft-mute">Coordinates and mark geometry update directly in the 3D scene.</div>
+              <div className="ft-mute">{Number(m.x || 0).toFixed(1)} m, {Number(m.z || 0).toFixed(1)} m from scene origin</div>
+              {(m.kind === 'cctv' || m.kind === 'photo') && (
+                <div style={{display:'grid',gap:7,margin:'8px 0'}}>
+                  <label className="ft-field"><span>Camera heading (degrees clockwise from north)</span>
+                    <input type="number" min="0" max="359" step="5" value={m.heading ?? 0}
+                      onChange={e=>updateMarker(m.id,{heading:((+e.target.value||0)%360+360)%360})}/>
+                  </label>
+                  <button className="ft-secondary" onClick={()=>captureMarkerView(m)}>
+                    Capture simulated {m.kind === 'cctv' ? 'CCTV-pole' : 'photo-point'} view
+                  </button>
+                  <small style={{color:'#8b5962'}}>Simulated viewpoint only. Real CCTV frames require an actual source recording below.</small>
+                </div>
+              )}
+              <label className="ft-field" style={{marginTop:8}}><span>Attach actual evidence photograph (saved with case)</span>
+                <input type="file" accept="image/jpeg,image/png,image/webp,image/heic" onChange={e=>{uploadPhoto(m,e.target.files?.[0]); e.target.value = ''}} />
+              </label>
+              {!!m.images?.length && <div style={{display:'grid',gridTemplateColumns:'repeat(2,minmax(0,1fr))',gap:6,marginTop:8}}>
+                {m.images.map(img=><div key={img.id} style={{border:'1px solid #ccd1d6',borderRadius:7,padding:5}}>
+                  <img alt={img.description || img.name} src={img.src} style={{width:'100%',height:80,objectFit:'cover',borderRadius:4}} />
+                  <small style={{display:'block',overflowWrap:'anywhere'}}>{img.sourceType === 'simulated-camera-view' ? 'SIMULATED POV' : 'UPLOADED PHOTO'} — {img.name}</small>
+                  <button className="ft-linkbtn" onClick={()=>updateMarker(m.id,{images:m.images.filter(v=>v.id!==img.id)})}>Remove image</button>
+                </div>)}
+              </div>}
             </div>
           ))}
         </div>
       </div>
 
+      <CameraFootagePanel />
       <div className="ft-block">
         <div className="ft-block-title">Accident evidence register</div>
         {SECTIONS.map((section, index) => (

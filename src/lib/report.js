@@ -365,6 +365,7 @@ async function waitFrame() {
 
 async function captureView(store, shoot, mode, title, onStatus) {
   onStatus?.(`Capturing ${title.toLowerCase()}...`)
+  if (typeof shoot !== 'function') return null
   useStore.setState({ cameraMode: mode })
   await waitFrame()
   await new Promise((resolve) => setTimeout(resolve, 250))
@@ -471,14 +472,14 @@ function drawVehicleCards(doc, vehicles, result) {
     const rows = [
       ['Initial speed', Number.isFinite(Number(vehicle.speed)) ? kmh(vehicle.speed) : 'Not recorded'],
       ['Calculated skid speed', vehicle.skid > 0 && analysis ? kmh(ms2kmh(analysis.skidSpeed)) : 'Not calculated'],
-      ['Equivalent barrier speed', vehicle.crush > 0 && analysis ? kmh(ms2kmh(analysis.ebs)) : 'Not calculated'],
+      ['Equivalent barrier speed (frontal model only)', vehicle.crush > 0 && analysis && (!vehicle.damageZone || vehicle.damageZone === 'front') ? kmh(ms2kmh(analysis.ebs)) : 'Not applicable / not calculated'],
       ['Post-impact speed estimate', vehicle.postDist > 0 && analysis ? kmh(ms2kmh(analysis.postSpeed)) : 'Not calculated'],
       ['Direction', getDirection(vehicle)],
       ['Initial position', getPosition(vehicle)],
       ['Final position', getFinalPosition(vehicle)],
       ['Braking', safe(firstValue(vehicle.braking, vehicle.brakingApplied), 'Not recorded')],
       ['Skid distance', Number(vehicle.skid) > 0 ? `${numberValue(vehicle.skid)} m` : 'Not recorded'],
-      ['Damage / crush input', Number(vehicle.crush) > 0 ? `${numberValue(vehicle.crush)} m` : 'Not recorded'],
+      ['Visual damage input', Number(vehicle.crush) > 0 ? `${Math.round(Number(vehicle.crush) * 100)}% severity; ${vehicle.damageZone || 'front'} zone` : 'Not recorded'],
       ['Associated evidence', safe(firstValue(vehicle.evidenceIds, vehicle.evidence), 'Not linked')],
     ]
 
@@ -765,12 +766,12 @@ function addPhysicsPage(doc, vehicles, store, result) {
       ])
     }
 
-    if (vehicle.crush > 0 && analysis) {
+    if (vehicle.crush > 0 && analysis && (!vehicle.damageZone || vehicle.damageZone === 'front')) {
       rows.push([
         name,
         'Equivalent barrier speed',
         kmh(ms2kmh(analysis.ebs)),
-        `Crush input: ${numberValue(vehicle.crush)} m`,
+        `Visual front crush input: ${Math.round(Number(vehicle.crush) * 100)}% severity (uncalibrated)`,
       ])
     }
 
@@ -993,6 +994,165 @@ function addFinalNotesPage(doc, store, caseId) {
   )
 }
 
+
+// Authored site geometry and case evidence (not independently verified Google geometry).
+function addLayoutAndAssessmentPages(doc, store) {
+  const site = store.siteLayout || { roads:[], buildings:[] }
+  const assessment = store.evidenceAssessment || {}
+  const fields = Object.entries(assessment).filter(([,entry])=>entry &&
+    (entry.status && entry.status!=='unknown' || entry.value !== '' && entry.value != null || entry.notes))
+  doc.addPage()
+  drawHeader(doc, 'Georeferenced Scene & Evidence Assessment')
+  let y=drawSectionTitle(doc,'Scene Layout Provenance',48)
+  const info=[
+    `Reference location: ${coordinateText(store.location || {})}`,
+    `Reconstruction radius: ${safe(store.radius)} m`,
+    `Investigator-traced road centrelines: ${(site.roads||[]).length}`,
+    `Investigator-traced building footprints: ${(site.buildings||[]).length}`,
+    `Editable geometry source: ${safe(store.osm?.origin?.source || store.osm?.mirror, 'Not recorded')}.`,
+    `Mapped ways: ${(store.osm?.data?.elements || []).filter(e=>e.tags?.highway).length} road segments, ${(store.osm?.data?.elements || []).filter(e=>e.tags?.building).length} buildings.`,
+    'OSM building heights without measured values are illustrative estimates; confirm against survey evidence.',
+    'Google imagery is a location reference and was not extracted into editable meshes.',
+  ]
+  for (const line of info) {
+    const lines=doc.splitTextToSize(line, CONTENT_W)
+    doc.setFont('helvetica','normal');doc.setFontSize(8);setTextColor(doc,COLORS.text)
+    doc.text(lines,M,y);y+=lines.length*4.7+3
+  }
+  y+=5
+  y=drawSectionTitle(doc,'Structured Evidence Register',y)
+  if (!fields.length) {addParagraph(doc,'No structured evidence assessment has been entered.',M,y);return}
+  for (const [id,entry] of fields) {
+    const headline=id.replace(/([A-Z])/g,' $1').replace(/^./,c=>c.toUpperCase())
+    const val=[entry.status && entry.status !== 'unknown' ? `Status: ${entry.status}` : '',
+      entry.value !== '' && entry.value != null ? `Value: ${entry.value}` : '', entry.notes ? `Source / notes: ${entry.notes}` : ''].filter(Boolean).join(' | ')
+    doc.setFont('helvetica','bold');doc.setFontSize(8)
+    const heading=doc.splitTextToSize(headline,CONTENT_W)
+    doc.setFont('helvetica','normal');doc.setFontSize(7.5)
+    const body=doc.splitTextToSize(val || 'No details provided.',CONTENT_W)
+    const h=heading.length*4.1+body.length*4.0+4
+    if(y+h>274) {doc.addPage();drawHeader(doc,'Evidence Assessment (continued)');y=drawSectionTitle(doc,'Evidence Assessment',48)}
+    doc.setFont('helvetica','bold');doc.setFontSize(8);setTextColor(doc,COLORS.dark)
+    doc.text(heading,M,y);y+=heading.length*4.1
+    doc.setFont('helvetica','normal');doc.setFontSize(7.5);setTextColor(doc,COLORS.text)
+    doc.text(body,M,y);y+=body.length*4+4
+  }
+}
+
+function addVerifiedCameraFrames(doc, footage, markers = []) {
+  if (!Array.isArray(footage) || !footage.length) return
+  for (let i=0;i<footage.length;i++) {
+    const item=footage[i]
+    doc.addPage()
+    drawHeader(doc, 'Documented CCTV / Dashcam Frame')
+    let y=drawSectionTitle(doc,'Authentic Source-Video Frame',48,
+      'This is a captured still from a user-supplied recording, not a ForensiTwin simulation.')
+    const entries=[
+      `Camera/source: ${safe(item.source)}`,
+      `Source video filename: ${safe(item.originalName)}`,
+      `Recording date/time (reported): ${safe(item.recordedAt)}`,
+      `Video offset: ${Number.isFinite(+item.frameTimeSeconds) ? Number(item.frameTimeSeconds).toFixed(1)+' seconds' : 'Not recorded'}`,
+      `Custodian / evidence reference: ${safe(item.custodian)}`,
+      `Linked CCTV marker: ${safe(markers.find(m=>m.id===item.cameraMarkerId)?.n, 'Not linked')}`,
+    ]
+    for(const line of entries) {
+      const lines=doc.splitTextToSize(line,CONTENT_W)
+      doc.setFont('helvetica','normal');doc.setFontSize(8);setTextColor(doc,COLORS.text)
+      doc.text(lines,M,y);y+=4.8*lines.length+3
+    }
+    if (item.frame && /^data:image\/(jpeg|jpg|png);base64,/i.test(item.frame)) {
+      try {
+        const props=doc.getImageProperties(item.frame)
+        const w=CONTENT_W
+        const h=Math.min(130,w*(props.height/props.width))
+        const drawW=Math.min(w, h*(props.width/props.height))
+        doc.addImage(item.frame,props.fileType||'JPEG',M+(w-drawW)/2,y+4,drawW,h,undefined,'FAST')
+        y+=h+14
+      } catch (error) { addParagraph(doc,'Unable to embed this captured frame.',M,y);y+=15 }
+    } else {addParagraph(doc,'No captured still was stored for this video reference.',M,y);y+=15}
+    addParagraph(doc,'Retain the original recording, hash, transfer records and clock-offset validation separately. A saved still image alone cannot establish provenance or authenticity.',M,Math.min(262,Math.max(y,224)),CONTENT_W,{fontSize:8,color:COLORS.muted})
+  }
+}
+
+/**
+ * Consolidated image gallery. Every card declares its actual provenance:
+ * simulation render, uploaded image or a frame of a supplied recording.
+ * Photos are never automatically claimed to be verified forensic evidence.
+ */
+function addEvidenceImageGallery(doc, markers, footage, sceneViews) {
+  const gallery = []
+  const accept = (src) => typeof src === 'string' && /^data:image\/(?:jpe?g|png);base64,/i.test(src)
+  for (const view of sceneViews) if (accept(view.src)) gallery.push({
+    src: view.src, title: view.name,
+    type: 'SIMULATED RECONSTRUCTION',
+    detail: 'Generated by ForensiTwin. Not an actual photograph of the incident.',
+  })
+  for (const marker of markers || []) {
+    const id = marker.n ?? marker.id ?? '?'
+    const kind = marker.kind || 'Evidence'
+    const imgs = Array.isArray(marker.images) ? marker.images : []
+    for (const image of imgs) if (accept(image.src)) gallery.push({
+      src: image.src,
+      title: `Marker ${id}: ${safe(image.name, kind)}`,
+      type: image.sourceType === 'simulated-camera-view' ? 'SIMULATED MARKER VIEW' : 'UPLOADED PHOTOGRAPH',
+      detail: image.sourceType === 'simulated-camera-view'
+        ? `Camera view rendered from scene coordinates X ${numberValue(marker.x)}, Z ${numberValue(marker.z)} m; not real CCTV footage.`
+        : `Investigator-attached image; origin and authentication require source records. ${safe(image.description, '')}`,
+    })
+    const legacy = [marker.photo, marker.dataUrl, marker.image].find(accept)
+    if (legacy) gallery.push({ src: legacy, title: `Marker ${id}: ${kind}`,
+      type: 'ATTACHED IMAGE — SOURCE NOT RECORDED', detail: safe(marker.note, 'Image supplied with case.') })
+  }
+  for (const record of footage || []) if (accept(record.frame)) {
+    const camera = (markers || []).find(m => m.id === record.cameraMarkerId)
+    gallery.push({
+      src: record.frame,
+      title: `${camera ? `CCTV pole ${camera.n}: ` : ''}${safe(record.source, 'Unknown camera')}`,
+      type: 'FRAME FROM USER-SUPPLIED RECORDING',
+      detail: `${safe(record.originalName, 'Unspecified filename')} / ${safe(record.custodian, 'Custodian not documented')} / T+${safe(record.frameTimeSeconds, '?')}s.${camera ? ` Linked pole: X ${numberValue(camera.x)}, Z ${numberValue(camera.z)} m, heading ${safe(camera.heading, '0')} deg.` : ' Camera position not linked.'} Verify source before evidentiary use.`,
+    })
+  }
+
+  // 2 full-width images per page; no arbitrary limit on the number of gallery pages.
+  // Explicit bounding boxes prevent captions or images overflowing an A4 page.
+  const perPage = 2
+  const total = Math.max(1, Math.ceil(gallery.length / perPage))
+  for (let page = 0; page < total; page++) {
+    doc.addPage()
+    drawHeader(doc, 'Image Gallery')
+    drawSectionTitle(doc, 'Reconstruction & Evidence Image Gallery', 46,
+      `Source-labelled illustrations and attached evidence · ${gallery.length} images · Sheet ${page + 1}/${total}`)
+    const section = gallery.slice(page * perPage, (page + 1) * perPage)
+    if (!section.length) { addParagraph(doc, 'No screenshots or evidence photographs were available for this case.', M, 82); continue }
+    for (let i = 0; i < section.length; i++) {
+      const item = section[i]
+      const startY = 67 + i * 104
+      doc.setFillColor(246, 248, 250)
+      doc.roundedRect(M, startY, CONTENT_W, 99, 3, 3, 'F')
+      try {
+        const props = doc.getImageProperties(item.src)
+        const width = Math.max(1, Number(props.width) || 1)
+        const height = Math.max(1, Number(props.height) || 1)
+        const drawW = Math.min(174, 75 * (width / height))
+        const drawH = Math.min(75, 174 * (height / width))
+        doc.addImage(item.src, /png/i.test(item.src.slice(0, 24)) ? 'PNG' : 'JPEG',
+          M + (CONTENT_W - drawW) / 2, startY + 3 + (75 - drawH) / 2, drawW, drawH, undefined, 'FAST')
+      } catch (error) {
+        doc.setFontSize(8)
+        doc.text('Image could not be embedded.', M + 7, startY + 35)
+      }
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(8)
+      setTextColor(doc, COLORS.dark)
+      doc.text(doc.splitTextToSize(`${page * perPage + i + 1}. ${item.title} — ${item.type}`, CONTENT_W - 8).slice(0, 1), M + 4, startY + 82)
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(6.8)
+      setTextColor(doc, COLORS.muted)
+      const detail = doc.splitTextToSize(item.detail, CONTENT_W - 10)
+      doc.text(detail.slice(0, 2), M + 4, startY + 87)
+      setTextColor(doc, COLORS.text)
+    }
+  }
+}
+
 export async function generateReport({ onStatus } = {}) {
   const store = useStore.getState()
   const caseInfo = store.caseInfo || {}
@@ -1002,14 +1162,13 @@ export async function generateReport({ onStatus } = {}) {
   const env = store.env || {}
   const shoot = store.screenshotFn
 
-  if (!shoot) {
-    throw new Error('The 3D view is not ready yet.')
-  }
+  // A missing or lost WebGL snapshot must not prevent a complete text/evidence report.
+  // Individual scene-view pages will explain that imagery was unavailable.
 
   const previousMode = store.cameraMode
   const caseId = safe(caseInfo.number, 'report').replace(/[^\w-]+/g, '_')
   const reportId = `FT-${Date.now().toString(36).toUpperCase()}`
-  const doc = new jsPDF({ unit: 'mm', format: 'a4' })
+  const doc = new jsPDF({ unit: 'mm', format: 'a4', compress:true })
 
   let topImage = null
   let overviewImage = null
@@ -1059,6 +1218,21 @@ export async function generateReport({ onStatus } = {}) {
 
   onStatus?.('Building evidence register...')
   addEvidencePage(doc, markers)
+
+  onStatus?.('Adding complete structured evidence and traced layout...')
+  addLayoutAndAssessmentPages(doc,store)
+
+  onStatus?.('Embedding documented CCTV/dashcam frames...')
+  addVerifiedCameraFrames(doc,store.cameraFootage,markers)
+
+  onStatus?.('Building source-labelled image gallery...')
+  addEvidenceImageGallery(doc, markers, store.cameraFootage, [
+    { name: 'Top view', src: topImage },
+    { name: 'Accident overview', src: overviewImage },
+    { name: "Driver's-eye view", src: driverImage },
+    { name: 'Side view', src: sideImage },
+    { name: 'Rear view', src: rearImage },
+  ])
 
   onStatus?.('Building accident timeline...')
   addTimelinePage(doc, getEvents(store))

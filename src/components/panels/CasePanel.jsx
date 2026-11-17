@@ -1,3 +1,4 @@
+import NearestPolicePanel from './NearestPolicePanel.jsx'
 import { useRef, useState } from 'react'
 import { useStore } from '../../store.js'
 import { generateReport } from '../../lib/report.js'
@@ -18,8 +19,10 @@ export default function CasePanel() {
     const a = document.createElement('a')
     a.href = url
     a.download = `forensitwin-${(caseInfo.number || 'case').replace(/\s+/g, '_')}.json`
+    document.body.appendChild(a)
     a.click()
-    URL.revokeObjectURL(url)
+    a.remove()
+    setTimeout(()=>URL.revokeObjectURL(url),1200)
   }
 
   const loadFile = (e) => {
@@ -65,7 +68,7 @@ export default function CasePanel() {
 
       <div className="ft-block">
         <div className="ft-block-title">Save &amp; reload</div>
-        <p className="ft-hint">Case files are saved as a small JSON file on your device — vehicles, markers, environment and case notes, but not the map data (that's refetched on load).</p>
+        <p className="ft-hint">Case JSON saves the traced road/building geometry, vehicles, evidence fields, and selected camera-video stills. Keep original CCTV recordings separately; their video bytes are not included.</p>
         <div className="ft-btnrow">
           <button className="ft-secondary" onClick={saveFile}>Save case file</button>
           <button className="ft-secondary" onClick={() => fileRef.current?.click()}>Load case file</button>
@@ -73,9 +76,10 @@ export default function CasePanel() {
         <input ref={fileRef} type="file" accept="application/json" hidden onChange={loadFile} />
       </div>
 
+      <NearestPolicePanel />
       <div className="ft-block">
         <div className="ft-block-title">Report</div>
-        <p className="ft-hint">Generates a PDF with top-down and driver's-eye views, case notes, and every calculated speed.</p>
+        <p className="ft-hint">Generates the complete PDF with reconstructed top/orbit/driver/side/rear views, structured evidence, all traced site features, and documented frames extracted from supplied CCTV/dashcam videos. Original video files are not embedded.</p>
         <button className="ft-cta" disabled={busy} onClick={exportPdf}>{busy ? 'Working…' : 'Export PDF report'}</button>
         {msg && <div className="ft-mapdock-note">{msg}</div>}
       </div>

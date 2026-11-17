@@ -1,4 +1,4 @@
-import { Component, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Component, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { Html, TransformControls, useGLTF } from '@react-three/drei'
 import * as THREE from 'three'
@@ -35,7 +35,7 @@ class Boundary extends Component {
 }
 
 // ---- meshes whose vertices are deformed by the crush model
-function Crushable({ parts, spec, crush, offset, mats }) {
+function Crushable({ parts, spec, crush, offset, zone, mats }) {
   const dims = useMemo(() => crushDims(spec), [spec])
   const applied = useRef('')
   const lastParts = useRef(null)
@@ -44,7 +44,7 @@ function Crushable({ parts, spec, crush, offset, mats }) {
     // crosses impact or a damage/offset input changes, not on every render frame.
     const sceneTime = useStore.getState().time
     const effectiveCrush = spec.noCrush || sceneTime < 0 ? 0 : Math.max(0, Math.min(1, Number(crush) || 0))
-    const signature = `${effectiveCrush}|${offset ?? 0}|${spec.noCrush ? 1 : 0}`
+    const signature = `${effectiveCrush}|${offset ?? 0}|${zone}|${spec.noCrush ? 1 : 0}`
     if (applied.current === signature && lastParts.current === parts) return
     applied.current = signature
     lastParts.current = parts
@@ -52,7 +52,7 @@ function Crushable({ parts, spec, crush, offset, mats }) {
       if (!p.deform) continue
       const pos = p.geo.attributes.position
       if (!pos?.array || !p.orig || p.orig.length !== pos.array.length) continue
-      deformPositions(p.orig, pos.array, dims, effectiveCrush, Number(offset) || 0)
+      deformPositions(p.orig, pos.array, dims, effectiveCrush, Number(offset) || 0, zone || 'front')
       pos.needsUpdate = true
       if (pos.count < 60000) p.geo.computeVertexNormals()
       p.geo.computeBoundingSphere()
@@ -63,10 +63,10 @@ function Crushable({ parts, spec, crush, offset, mats }) {
   ))
 }
 
-function GlbCrushable({ spec, crush, offset, mats }) {
+function GlbCrushable({ spec, crush, offset, zone, mats }) {
   const { scene } = useGLTF(spec.glb)
   const parts = useMemo(() => flattenGlb(scene, spec), [scene, spec])
-  return <Crushable parts={parts} spec={spec} crush={crush} offset={offset} mats={mats} />
+  return <Crushable parts={parts} spec={spec} crush={crush} offset={offset} zone={zone} mats={mats} />
 }
 
 function VehicleBody({ v, spec }) {
@@ -75,12 +75,12 @@ function VehicleBody({ v, spec }) {
   useEffect(() => () => Object.values(mats).forEach((m) => m.dispose()), [mats])
   const parts = useMemo(() => buildProcedural(v.type), [v.type])
   useEffect(() => () => parts.forEach((p) => p.geo.dispose()), [parts])
-  const fallback = <Crushable parts={parts} spec={spec} crush={v.crush} offset={v.impactOffset} mats={mats} />
+  const fallback = <Crushable parts={parts} spec={spec} crush={v.crush} offset={v.impactOffset} zone={v.damageZone} mats={mats} />
   if (!hasGlb) return fallback
   return (
     <Boundary fallback={fallback}>
       <Suspense fallback={fallback}>
-        <GlbCrushable spec={spec} crush={v.crush} offset={v.impactOffset} mats={mats} />
+        <GlbCrushable spec={spec} crush={v.crush} offset={v.impactOffset} zone={v.damageZone} mats={mats} />
       </Suspense>
     </Boundary>
   )
@@ -167,6 +167,16 @@ export default function Vehicle({ v }) {
           if (st.placing) return
           e.stopPropagation()
           st.select(v.id)
+          if (st.editDamageOnClick && st.time >= 0 && spec && !spec.noCrush) {
+            // Ground truth is supplied by the investigator: click only selects a
+            // *visual damage zone*, not a physical point of collision.
+            const local = groupRef.current.worldToLocal(e.point.clone())
+            const dx = Math.abs(local.x) / Math.max(spec.W / 2, .01)
+            const dz = Math.abs(local.z) / Math.max(spec.L / 2, .01)
+            const zone = local.y >= spec.H * .82 ? 'roof' :
+              dx > dz ? (local.x >= 0 ? 'right' : 'left') : (local.z >= 0 ? 'front' : 'rear')
+            st.updateVehicle(v.id, { damageZone:zone, crush: Math.max(.25,v.crush || 0) })
+          }
         }}
       >
         <Boundary
