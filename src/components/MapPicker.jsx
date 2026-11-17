@@ -1,274 +1,118 @@
 import { useEffect, useRef, useState } from 'react'
-import { MapContainer, TileLayer, Marker, Circle, useMapEvents, useMap } from 'react-leaflet'
-import L from 'leaflet'
 import { useStore } from '../store.js'
-import { buildQuery, offlineFileFor } from '../lib/overpass.js'
 
-const pinIcon = L.divIcon({
-  className: '',
-  html: '<div class="ft-pin"></div>',
-  iconSize: [26, 34],
-  iconAnchor: [13, 32],
-})
-
-function ClickCapture({ onPick }) {
-  useMapEvents({ click: (e) => onPick(e.latlng.lat, e.latlng.lng) })
-  return null
-}
-
-function FlyTo({ center }) {
-  const map = useMap()
-  useEffect(() => {
-    if (center) map.flyTo(center, Math.max(map.getZoom(), 15), { duration: 0.8 })
-  }, [center]) // eslint-disable-line react-hooks/exhaustive-deps
-  return null
-}
-
-async function geocode(q) {
-  const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&q=${encodeURIComponent(q)}`
-  const res = await fetch(url, { headers: { Accept: 'application/json' } })
-  if (!res.ok) throw new Error('Search failed')
-  return res.json()
-}
-
-function ImportPanel({ location, radius }) {
-  const loadOsmFromJson = useStore((s) => s.loadOsmFromJson)
-  const osm = useStore((s) => s.osm)
-  const [open, setOpen] = useState(false)
-  const [text, setText] = useState('')
-  const [err, setErr] = useState('')
-  const fileRef = useRef()
-
-  const query = buildQuery(location.lat, location.lon, radius)
-  const turboUrl = `https://overpass-turbo.eu/?Q=${encodeURIComponent(query)}`
-
-  const sameSpotLoaded = osm.status === 'ready' && osm.origin
-    && Math.abs(osm.origin.lat - location.lat) < 0.0001
-    && Math.abs(osm.origin.lon - location.lon) < 0.0001
-    && osm.origin.radius === radius
-
-  const downloadForBundling = () => {
-    const filename = offlineFileFor(location.lat, location.lon, radius)
-    const blob = new Blob([JSON.stringify(osm.data)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = filename
-    a.click()
-    URL.revokeObjectURL(url)
+const DEFAULT_CENTER = { lat: 23.0225, lng: 72.5714, altitude: 0 }
+let googleLoader
+function loadGoogleMaps(key) {
+  if (window.google?.maps?.importLibrary) return Promise.resolve(window.google.maps)
+  if (!key) return Promise.reject(new Error('Add your Google Maps API key to VITE_GOOGLE_MAPS_API_KEY in .env.local, then restart Vite.'))
+  if (!googleLoader) {
+    googleLoader = new Promise((resolve, reject) => {
+      const existing = document.querySelector('script[data-forensitwin-google-maps]')
+      if (existing) { existing.addEventListener('load', () => resolve(window.google.maps), { once: true }); existing.addEventListener('error', reject, { once: true }); return }
+      const script = document.createElement('script')
+      script.dataset.forensitwinGoogleMaps = 'true'
+      script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&v=beta&loading=async`
+      script.async = true
+      script.onload = () => resolve(window.google.maps)
+      script.onerror = () => reject(new Error('Google Maps JavaScript API failed to load. Check the key, billing and API restrictions.'))
+      document.head.appendChild(script)
+    })
   }
-
-  const copyQuery = async () => {
-    try {
-      await navigator.clipboard.writeText(query)
-    } catch {
-      setErr('Could not copy automatically — select and copy the query text below instead.')
-    }
-  }
-
-  const load = (raw) => {
-    setErr('')
-    try {
-      const json = JSON.parse(raw)
-      loadOsmFromJson(json)
-    } catch {
-      setErr("Couldn't parse that as JSON. Make sure you pasted/uploaded the raw Overpass response.")
-    }
-  }
-
-  const onFile = (e) => {
-    const f = e.target.files?.[0]
-    if (!f) return
-    const reader = new FileReader()
-    reader.onload = () => load(String(reader.result))
-    reader.readAsText(f)
-  }
-
-  if (!open) {
-    return (
-      <button className="ft-linkbtn" style={{ marginTop: 10 }} onClick={() => setOpen(true)}>
-        Or import OSM data manually
-      </button>
-    )
-  }
-
-  return (
-    <div className="ft-import">
-      <div className="ft-block-title">Import manually</div>
-      <p className="ft-mute" style={{ margin: '4px 0 10px' }}>
-        If the live fetch keeps failing, run the same query yourself on Overpass Turbo (it works from
-        your own browser even when our automatic fetch doesn't) and load the result here. This always
-        works, with no dependency on any mirror being reachable from this app.
-      </p>
-          <ol style={{ margin: '0 0 10px', paddingLeft: 18, fontSize: 13, lineHeight: 1.6 }}>
-        <li>
-          <a href={turboUrl} target="_blank" rel="noreferrer">Open Overpass Turbo with this query pre-filled</a>
-          {' '}(or <button className="ft-linkbtn" style={{ display: 'inline' }} onClick={copyQuery}>copy the query</button> and paste it in yourself)
-        </li>
-        <li>Click <b>Run</b> there, then <b>Export</b> → <b>raw data</b> → <b>download / copy as raw OSM data</b></li>
-        <li>Paste the JSON below, or upload the downloaded file</li>
-      </ol>
-      {sameSpotLoaded && (
-        <div className="ft-bundle-box">
-          <div className="ft-mute" style={{ marginBottom: 6 }}>
-            This exact spot is already loaded — save it permanently so it never depends on a live fetch again:
-          </div>
-          <button className="ft-linkbtn" onClick={downloadForBundling}>
-            Download <code>{offlineFileFor(location.lat, location.lon, radius)}</code> to bundle it
-          </button>
-          <div className="ft-mute" style={{ marginTop: 6, fontSize: 12 }}>
-            Move the downloaded file into <code>public/offline-osm/</code> in the repo, commit, and push —
-            from then on this spot loads instantly with zero network calls, on Vercel and localhost alike.
-          </div>
-        </div>
-      )}
-      <textarea
-        className="ft-importbox"
-        rows={5}
-        placeholder='Paste the Overpass JSON here (starts with { "version": ...)'
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-      />
-      <div className="ft-import-actions">
-        <button className="ft-cta" onClick={() => load(text)} disabled={!text.trim()}>Load pasted data</button>
-        <button className="ft-linkbtn" onClick={() => fileRef.current?.click()}>or choose a file…</button>
-        <input ref={fileRef} type="file" accept=".json,application/json" style={{ display: 'none' }} onChange={onFile} />
-      </div>
-      {err && <div className="ft-mapdock-error" style={{ marginTop: 8 }}>{err}</div>}
-    </div>
-  )
+  return googleLoader
 }
 
 export default function MapPicker() {
+  const mapHost = useRef(null)
+  const mapRef = useRef(null)
+  const markerRef = useRef(null)
+  const geocoderRef = useRef(null)
   const location = useStore((s) => s.location)
   const radius = useStore((s) => s.radius)
   const setRadius = useStore((s) => s.setRadius)
   const setLocation = useStore((s) => s.setLocation)
   const loadOsm = useStore((s) => s.loadOsm)
-  const osm = useStore((s) => s.osm)
-  const mapView = useStore((s) => s.mapView)
-
+  const sceneStatus = useStore((s) => s.osm)
   const [query, setQuery] = useState('')
-  const [results, setResults] = useState([])
   const [searching, setSearching] = useState(false)
-  const [searchErr, setSearchErr] = useState('')
-  const [flyTarget, setFlyTarget] = useState(null)
-  const debRef = useRef()
+  const [error, setError] = useState('')
+  const [mapReady, setMapReady] = useState(false)
+  const [mapMode, setMapMode] = useState('HYBRID')
 
-  const pick = (lat, lon, label) => {
-    setLocation({ lat, lon, label: label ?? `${lat.toFixed(5)}, ${lon.toFixed(5)}` })
-    setResults([])
+  const choose = (lat, lon, label) => setLocation({ lat, lon, label: label || `${lat.toFixed(5)}, ${lon.toFixed(5)}` })
+
+  useEffect(() => {
+    let alive = true
+    const key = import.meta.env.VITE_GOOGLE_MAPS_API_KEY
+    loadGoogleMaps(key).then(async (maps) => {
+      const { Map3DElement, MapMode, Marker3DElement } = await maps.importLibrary('maps3d')
+      if (!alive || !mapHost.current) return
+      const center = location ? { lat: location.lat, lng: location.lon, altitude: 0 } : DEFAULT_CENTER
+      const map = new Map3DElement({ center, range: 1700, tilt: 58, heading: 15, mode: MapMode?.HYBRID || 'HYBRID', defaultUIHidden: false, gestureHandling: 'COOPERATIVE' })
+      map.style.width = '100%'; map.style.height = '100%'
+      map.addEventListener('gmp-click', (event) => {
+        const p = event.position
+        if (p && Number.isFinite(p.lat) && Number.isFinite(p.lng)) choose(p.lat, p.lng, `${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}`)
+      })
+      map.addEventListener('gmp-error', () => setError('Google 3D map could not initialise. Check Maps JavaScript API, billing and API key restrictions.'))
+      mapHost.current.replaceChildren(map)
+      mapRef.current = map
+      markerRef.current = Marker3DElement
+      geocoderRef.current = new maps.Geocoder()
+      setMapReady(true)
+    }).catch((e) => { if (alive) setError(e.message || 'Google Maps could not load.') })
+    return () => { alive = false; mapRef.current = null }
+  }, [])
+
+  useEffect(() => {
+    if (!mapRef.current || !location || !markerRef.current) return
+    const map = mapRef.current
+    map.center = { lat: location.lat, lng: location.lon, altitude: 0 }
+    const Marker = markerRef.current
+    const marker = new Marker({ position: { lat: location.lat, lng: location.lon, altitude: 8 }, label: 'Accident location', extruded: true })
+    map.append(marker)
+    return () => marker.remove()
+  }, [location?.lat, location?.lon])
+
+  const search = async (e) => {
+    e.preventDefault(); if (!query.trim() || !geocoderRef.current) return
+    setSearching(true); setError('')
+    try {
+      const response = await geocoderRef.current.geocode({ address: query.trim() })
+      const result = response.results?.[0]
+      if (!result) throw new Error('No matching location found.')
+      const p = result.geometry.location
+      choose(p.lat(), p.lng(), result.formatted_address)
+      mapRef.current?.flyCameraTo({ endCamera: { center: { lat: p.lat(), lng: p.lng(), altitude: 0 }, range: 1300, tilt: 58, heading: 15 }, durationMillis: 1800 })
+      setQuery('')
+    } catch (e) { setError(e.message || 'Location search failed. Enable Geocoding through Maps JavaScript API or check your key restrictions.') }
+    finally { setSearching(false) }
   }
 
-  const runSearch = (q) => {
-    setQuery(q)
-    clearTimeout(debRef.current)
-    if (q.trim().length < 3) { setResults([]); setSearchErr(''); return }
-    debRef.current = setTimeout(async () => {
-      setSearching(true)
-      setSearchErr('')
-      try {
-        const r = await geocode(q)
-        setResults(r)
-      } catch {
-        setSearchErr('Search is unavailable right now.')
-      } finally {
-        setSearching(false)
-      }
-    }, 450)
+  const locateMe = () => {
+    if (!navigator.geolocation) { setError('Location is not supported by this browser.'); return }
+    navigator.geolocation.getCurrentPosition((p) => {
+      choose(p.coords.latitude, p.coords.longitude, 'My location')
+      mapRef.current?.flyCameraTo({ endCamera: { center: { lat: p.coords.latitude, lng: p.coords.longitude, altitude: 0 }, range: 1200, tilt: 60, heading: 0 }, durationMillis: 1600 })
+    }, () => setError('Could not access your location. Check browser location permission.'))
   }
 
-  const useResult = (r) => {
-    const lat = parseFloat(r.lat), lon = parseFloat(r.lon)
-    pick(lat, lon, r.display_name.split(',').slice(0, 3).join(','))
-    setFlyTarget([lat, lon])
-    setQuery('')
-  }
-
-  const useMyLocation = () => {
-    if (!navigator.geolocation) return
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const { latitude, longitude } = pos.coords
-        pick(latitude, longitude, 'My location')
-        setFlyTarget([latitude, longitude])
-      },
-      () => setSearchErr('Could not read your location.'),
-    )
-  }
-
-  return (
-    <div className="ft-mappage">
-      <div className="ft-mapsearch">
-        <div className="ft-searchbox">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="2" /><path d="m20 20-3.5-3.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>
-          <input
-            value={query}
-            onChange={(e) => runSearch(e.target.value)}
-            placeholder="Search an intersection, address, or landmark…"
-          />
-          <button className="ft-iconbtn" onClick={useMyLocation} title="Use my location">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="2" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>
-          </button>
-        </div>
-        {(results.length > 0 || searching || searchErr) && (
-          <div className="ft-searchresults">
-            {searching && <div className="ft-searchhint">Searching…</div>}
-            {searchErr && <div className="ft-searchhint">{searchErr}</div>}
-            {results.map((r) => (
-              <button key={r.place_id} onClick={() => useResult(r)}>
-                {r.display_name}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-
-      <MapContainer center={mapView.center} zoom={mapView.zoom} className="ft-map" zoomControl={false}>
-        <TileLayer
-          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-        />
-        <ClickCapture onPick={(lat, lon) => pick(lat, lon)} />
-        {flyTarget && <FlyTo center={flyTarget} />}
-        {location && (
-          <>
-            <Marker position={[location.lat, location.lon]} icon={pinIcon} />
-            <Circle center={[location.lat, location.lon]} radius={radius} pathOptions={{ color: '#f5c400', weight: 2, fillOpacity: 0.06 }} />
-          </>
-        )}
-      </MapContainer>
-
-      <div className="ft-mapdock">
-        {!location && <p className="ft-mapdock-hint">Click the map, search an address, or use your location to drop a pin.</p>}
-        {location && (
-          <>
-            <div className="ft-mapdock-loc">
-              <span className="ft-pindot" />
-              <div>
-                <div className="ft-mapdock-label">{location.label}</div>
-                <div className="ft-mapdock-coords">{location.lat.toFixed(5)}, {location.lon.toFixed(5)}</div>
-              </div>
-            </div>
-            <label className="ft-radius">
-              Capture radius
-              <input type="range" min="250" max="1500" step="50" value={radius} onChange={(e) => setRadius(+e.target.value)} />
-              <span>{radius} m</span>
-            </label>
-            <button className="ft-cta" disabled={osm.status === 'loading'} onClick={() => loadOsm()}>
-              {osm.status === 'loading' ? 'Generating twin…' : 'Generate 3D twin'}
-            </button>
-            {osm.status === 'loading' && <div className="ft-mapdock-note">{osm.note}</div>}
-            {osm.status === 'error' && (
-              <div className="ft-mapdock-error">
-                Couldn't reach OpenStreetMap. {osm.error}
-                <button onClick={() => loadOsm()}>Try again</button>
-              </div>
-            )}
-            <ImportPanel location={location} radius={radius} />
-          </>
-        )}
-      </div>
+  return <div className="ft-mappage ft-google-mappage">
+    <div className="ft-google-map" ref={mapHost} />
+    {!mapReady && <div className="ft-google-loading">{error || 'Loading Google Maps 3D…'}</div>}
+    <form className="ft-mapsearch" onSubmit={search}>
+      <div className="ft-searchbox"><span aria-hidden="true">⌕</span><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search an address, intersection or landmark…" /><button className="ft-iconbtn" type="submit" disabled={searching}>{searching ? '…' : 'Go'}</button><button className="ft-iconbtn" type="button" onClick={locateMe} title="Use my location">◎</button></div>
+    </form>
+    <div className="ft-google-mode"><button className={mapMode === 'HYBRID' ? 'active' : ''} onClick={() => { setMapMode('HYBRID'); if (mapRef.current) mapRef.current.mode = 'HYBRID' }}>Satellite</button><button className={mapMode === 'ROADMAP' ? 'active' : ''} onClick={() => { setMapMode('ROADMAP'); if (mapRef.current) mapRef.current.mode = 'ROADMAP' }}>Roadmap</button></div>
+    <div className="ft-mapdock">
+      {!location ? <p className="ft-mapdock-hint">Click anywhere on the Google 3D map, search for a location, or use your current location.</p> : <>
+        <div className="ft-mapdock-loc"><span className="ft-pindot" /><div><div className="ft-mapdock-label">{location.label}</div><div className="ft-mapdock-coords">{location.lat.toFixed(5)}, {location.lon.toFixed(5)}</div></div></div>
+        <label className="ft-radius">Reconstruction area <input type="range" min="250" max="1500" step="50" value={radius} onChange={(e) => setRadius(+e.target.value)} /><span>{radius} m</span></label>
+        <div className="ft-google-notice"><b>Google Maps-only mode:</b> Google supplies the map and location. It does not provide editable road/building meshes to this app. Generate creates a schematic, editable reconstruction template centred on this coordinate; it is not an automatic copy of the real street layout.</div>
+        <button className="ft-cta" disabled={!mapReady || sceneStatus.status === 'loading'} onClick={() => loadOsm()}>{sceneStatus.status === 'loading' ? 'Preparing reconstruction…' : 'Create reconstruction workspace'}</button>
+        {sceneStatus.status === 'loading' && <div className="ft-mapdock-note">{sceneStatus.note}</div>}
+      </>}
+      {error && <div className="ft-mapdock-error">{error}</div>}
     </div>
-  )
+  </div>
 }

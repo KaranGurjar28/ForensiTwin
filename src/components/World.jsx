@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import * as THREE from 'three'
 import { useStore } from '../store.js'
-import { buildWorld } from '../lib/osmGeometry.js'
+import { buildWorld } from '../lib/osmGeometry.js' // consumes ForensiTwin-generated schematic geometry
 
 const Y = new THREE.Vector3(0, 1, 0)
 

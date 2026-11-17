@@ -10,8 +10,7 @@ export default defineConfig({
         manualChunks: {
           three: ['three'],
           r3f: ['@react-three/fiber', '@react-three/drei'],
-          map: ['leaflet', 'react-leaflet'],
-          pdf: ['jspdf'],
+                    pdf: ['jspdf'],
         },
       },
     },

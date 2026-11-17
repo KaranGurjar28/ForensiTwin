@@ -1,6 +1,6 @@
 import { create } from 'zustand'
-import { fetchOsm } from './lib/overpass.js'
-import { fetchElevation, makeFlatSampler, gradeAt } from './lib/elevation.js'
+import { makeFlatSampler, gradeAt } from './lib/elevation.js'
+import { createSchematicScene } from './lib/googleScene.js'
 import { CATALOG, speedFor } from './lib/catalog.js'
 import { wrap360 } from './lib/geo.js'
 
@@ -15,10 +15,8 @@ export const DEFAULT_LAYERS = {
 }
 
 export const MARKER_KINDS = {
-  blood: 'Blood trace', hair: 'Hair', fibre: 'Fibre', paint: 'Paint transfer',
-  debris: 'Debris', gouge: 'Gouge mark', skid: 'Skid mark', yaw: 'Yaw mark', scrub: 'Scrub / tyre skip mark',
-  tyre: 'Tyre print', rest: 'Rest position', impact: 'Point of impact', glass: 'Broken glass', fluid: 'Fluid leak',
-  seatbelt: 'Seat-belt evidence', airbag: 'Airbag evidence', cctv: 'CCTV camera', witness: 'Witness', photo: 'Photo point', other: 'Other',
+  debris: 'Debris', gouge: 'Gouge mark', yaw: 'Yaw mark', rest: 'Rest position',
+  witness: 'Witness', glass: 'Broken glass', fluid: 'Fluid leak', photo: 'Photo point', other: 'Other',
 }
 
 export function makeVehicle(type, index = 0, over = {}) {
@@ -32,7 +30,6 @@ export function makeVehicle(type, index = 0, over = {}) {
     licensePlate: '',
     vin: '',
     speedometerKmh: '',
-    occupantCount: type === 'bicycle' ? 1 : (['moto', 'scooter', 'rickshaw'].includes(type) ? 1 : 2),
     x: index === 0 ? 0 : (index % 2 ? 1 : -1) * (5 + index * 2),
     z: index === 0 ? 0 : 0,
     heading,
@@ -76,32 +73,21 @@ export const useStore = create((set, get) => ({
     if (!location) return
     const token = ++loadToken
     const key = `${location.lat.toFixed(5)},${location.lon.toFixed(5)},${radius}`
-    set((s) => ({ osm: { ...s.osm, status: 'loading', error: null, note: 'Contacting Overpass…' } }))
-    try {
-      const { json, mirror, cached } = await fetchOsm(location.lat, location.lon, radius, {
-        onStatus: (note) => token === loadToken && set((s) => ({ osm: { ...s.osm, note } })),
-      })
-      if (token !== loadToken) return
-      const changed = get().osm.loadedKey !== key
-      set((s) => ({
-        osm: { status: 'ready', data: json, error: null, note: '', mirror, cached, loadedKey: key, origin: { lat: location.lat, lon: location.lon, radius } },
-        sceneId: s.sceneId + 1,
-        view: 'scene',
-        tab: s.tab === 'scene' && changed ? 'vehicles' : s.tab,
-        ...(changed && !preserve ? { vehicles: [], objects: [], selectedId: null, markers: [], time: 0, playing: false } : {}),
-      }))
-
-      // Terrain is best-effort and loads independently of OSM geometry —
-      // a slow or failed elevation fetch never blocks the 3D scene.
-      set({ terrainStatus: 'loading' })
-      fetchElevation(location.lat, location.lon, radius).then((sampler) => {
-        if (token !== loadToken) return
-        set({ terrain: sampler, terrainStatus: sampler.available ? 'ready' : 'unavailable' })
-      })
-      } catch (e) {
-      if (token !== loadToken) return
-      set((s) => ({ osm: { ...s.osm, status: 'error', error: String(e.message || e), note: '' } }))
-    }
+    set((s) => ({ osm: { ...s.osm, status: 'loading', error: null, note: 'Building a local schematic reconstruction template…' } }))
+    // Google Maps is the only map provider in this mode. It does not expose editable
+    // street/building meshes, so the reconstruction engine creates a clearly-labelled
+    // schematic road/building template. Investigators must adjust it to measured evidence.
+    const json = createSchematicScene(location.lat, location.lon, radius)
+    if (token !== loadToken) return
+    const changed = get().osm.loadedKey !== key
+    set((s) => ({
+      osm: { status: 'ready', data: json, error: null, note: '', mirror: 'ForensiTwin schematic template', cached: true, loadedKey: key, origin: { lat: location.lat, lon: location.lon, radius, source: 'schematic-template' } },
+      sceneId: s.sceneId + 1,
+      view: 'scene',
+      tab: s.tab === 'scene' && changed ? 'vehicles' : s.tab,
+      terrain: makeFlatSampler(), terrainStatus: 'unavailable',
+      ...(changed && !preserve ? { vehicles: [], objects: [], selectedId: null, markers: [], time: 0, playing: false } : {}),
+    }))
   },
   cancelLoad: () => { loadToken++; set((s) => ({ osm: { ...s.osm, status: s.osm.data ? 'ready' : 'idle', note: '' } })) },
 
@@ -109,29 +95,7 @@ export const useStore = create((set, get) => ({
   // the query on overpass-turbo.eu and pasted/uploaded the result) — a
   // manual path that works regardless of whether any mirror is reachable
   // from this app right now.
-  loadOsmFromJson: (json) => {
-    const { location, radius } = get()
-    if (!location) return
-    if (!json || !Array.isArray(json.elements)) {
-      set((s) => ({ osm: { ...s.osm, status: 'error', error: 'That doesn\'t look like Overpass JSON — expected an "elements" array.', note: '' } }))
-      return
-    }
-    const token = ++loadToken // cancel any in-flight network fetch
-    const key = `${location.lat.toFixed(5)},${location.lon.toFixed(5)},${radius}`
-    const changed = get().osm.loadedKey !== key
-    set((s) => ({
-      osm: { status: 'ready', data: json, error: null, note: '', mirror: 'manual import', cached: false, loadedKey: key, origin: { lat: location.lat, lon: location.lon, radius } },
-      sceneId: s.sceneId + 1,
-      view: 'scene',
-      tab: s.tab === 'scene' && changed ? 'vehicles' : s.tab,
-      ...(changed ? { vehicles: [], objects: [], selectedId: null, markers: [], time: 0, playing: false } : {}),
-    }))
-    set({ terrainStatus: 'loading' })
-    fetchElevation(location.lat, location.lon, radius).then((sampler) => {
-      if (token !== loadToken) return
-      set({ terrain: sampler, terrainStatus: sampler.available ? 'ready' : 'unavailable' })
-    })
-  },
+  loadOsmFromJson: () => set((s) => ({ osm: { ...s.osm, status: 'error', error: 'Manual OSM import is disabled in Google Maps-only mode.', note: '' } })),
   
   // ---- scene settings
   env: DEFAULT_ENV,
@@ -223,10 +187,6 @@ export const useStore = create((set, get) => ({
     if (object) return get().updateObject(id, { heading: wrap360(object.heading + d) })
   },
 
-  // ---- structured accident evidence register (case-persistent)
-  evidenceAssessment: {},
-  updateEvidenceField: (fieldId, entry) => set((s) => ({ evidenceAssessment: { ...s.evidenceAssessment, [fieldId]: entry } })),
-
   // ---- evidence markers
   markers: [],
   placing: null, // marker kind currently being placed, or null
@@ -277,7 +237,7 @@ export const useStore = create((set, get) => ({
     return {
       version: 1,
       location: s.location, radius: s.radius,
-      vehicles: s.vehicles, objects: s.objects, markers: s.markers, evidenceAssessment: s.evidenceAssessment,
+      vehicles: s.vehicles, objects: s.objects, markers: s.markers,
       env: s.env, layers: s.layers, caseInfo: s.caseInfo, physics: s.physics,
     }
   },
@@ -289,7 +249,7 @@ export const useStore = create((set, get) => ({
       location: d.location, radius: d.radius ?? 800,
       vehicles: savedVehicles,
       objects: [...(d.objects ?? []), ...legacyObjects],
-      markers: (d.markers ?? []).map((m, i) => ({ ...m, n: m.n ?? i + 1 })), evidenceAssessment: d.evidenceAssessment ?? {},
+      markers: d.markers ?? [],
       env: { ...DEFAULT_ENV, ...d.env }, layers: { ...DEFAULT_LAYERS, ...d.layers },
       caseInfo: d.caseInfo ?? { number: '', investigator: '', notes: '' },
       physics: { pair: null, e: 0.25, normalDeg: null, grade: 0, eff: 1, ...d.physics },
