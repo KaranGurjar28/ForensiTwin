@@ -11,6 +11,7 @@ import VehiclesPanel from './components/panels/VehiclesPanel.jsx'
 import PhysicsPanel from './components/panels/PhysicsPanel.jsx'
 import EvidencePanel from './components/panels/EvidencePanel.jsx'
 import CasePanel from './components/panels/CasePanel.jsx'
+import { saveWorkspaceFiles } from './lib/workspaceFiles.js'
 
 const PANELS = {
   scene: ScenePanel,
@@ -21,7 +22,7 @@ const PANELS = {
 }
 const switchStyle = {
   position:'absolute', top:10, right:14, zIndex:9,
-  display:'flex', gap:5, padding:5, borderRadius:11,
+  display:'flex', flexWrap:'wrap', gap:5, padding:5, borderRadius:11, maxWidth:'calc(100% - 28px)',
   background:'rgba(13,23,34,.94)', border:'1px solid rgba(255,255,255,.23)',
   boxShadow:'0 3px 14px rgba(0,0,0,.33)',
 }
@@ -41,6 +42,8 @@ export default function App() {
   const [workspaceMode, setWorkspaceMode] = useState('google')
   const [showImporter, setShowImporter] = useState(false)
   const [allowEmptyScene, setAllowEmptyScene] = useState(false)
+  const [savingWorkspace, setSavingWorkspace] = useState(false)
+  const [saveMessage, setSaveMessage] = useState('')
 
   const Panel = PANELS[tab] || ScenePanel
   // Google displays a location; OSM provides editable road/building geometry.
@@ -63,7 +66,7 @@ export default function App() {
   // Starting a new case location must never keep an old empty-lab override.
   useEffect(() => {
     setAllowEmptyScene(false)
-    setWorkspaceMode('google')
+    setWorkspaceMode(osm?.status === 'ready' && builtFeatures > 0 ? 'mesh' : 'google')
   }, [location?.lat, location?.lon])
 
   useEffect(() => {
@@ -84,6 +87,26 @@ export default function App() {
       setWorkspaceMode('google')
     }
   }, [workspaceMode, hasEditableGeometry, allowEmptyScene])
+
+  async function handleSaveWorkspace() {
+    if (savingWorkspace) return
+    setSavingWorkspace(true)
+    setSaveMessage('')
+    try {
+      const result = await saveWorkspaceFiles()
+      if (result.cancelled) {
+        setSaveMessage('Save cancelled. No files were changed.')
+      } else if (result.method === 'folder') {
+        setSaveMessage(`Saved both files to your selected folder (${result.featureCount} GeoJSON features).`)
+      } else {
+        setSaveMessage('Started both downloads. If one is missing, allow multiple downloads for this site.')
+      }
+    } catch (error) {
+      setSaveMessage(`Save failed: ${error.message || String(error)}`)
+    } finally {
+      setSavingWorkspace(false)
+    }
+  }
 
   function openMesh() {
     if (!hasEditableGeometry && !allowEmptyScene) {
@@ -138,11 +161,25 @@ export default function App() {
             onClick={openMesh}>
             Editable 3D {hasEditableGeometry ? `(${builtFeatures} features)` : '· Add geometry'}
           </button>
+          <button type="button" style={{...buttonStyle,background:'#2a8766',color:'#fff'}}
+            onClick={handleSaveWorkspace}
+            disabled={savingWorkspace}
+            title="Choose a folder and save the editable 3D workspace JSON plus matching GeoJSON">
+            {savingWorkspace ? 'Saving workspace…' : 'Save workspace (2 files)'}
+          </button>
           <button type="button" style={{...buttonStyle,background:'transparent',color:'#cbd9e5'}}
             onClick={() => setShowImporter(true)} title="Import independently obtained GeoJSON road and building outlines">
             Import
           </button>
         </div>
+
+        {saveMessage && <div role="status" style={{
+          position: 'absolute', top: 67, right: 14, zIndex: 9,
+          background: 'rgba(13,23,34,.96)', color: '#f2f7fb',
+          border: '1px solid rgba(255,255,255,.24)', borderRadius: 8,
+          padding: '9px 12px', fontSize: 12, maxWidth: 390,
+          boxShadow: '0 3px 14px rgba(0,0,0,.3)',
+        }}>{saveMessage}</div>}
 
         {workspaceMode==='mesh' && hasEditableGeometry && <div style={{position:'absolute',bottom:54,left:12,zIndex:8,
           background:'rgba(12,25,37,.80)',color:'#f7f9fb',fontSize:11,padding:'5px 9px',borderRadius:6,pointerEvents:'auto'}}>

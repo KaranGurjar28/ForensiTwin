@@ -9,6 +9,7 @@ import Overlays from './Overlays.jsx'
 import Environment from './Environment.jsx'
 import CameraRig from './CameraRig.jsx'
 import Snapshot from './Snapshot.jsx'
+import VideoCaptureBridge from './VideoCaptureBridge.jsx'
 
 export default function Scene() {
   const vehicles = useStore((s) => s.vehicles)
@@ -26,6 +27,7 @@ export default function Scene() {
       onPointerMissed={() => useStore.getState().select(null)}
     >
       <Snapshot />
+      <VideoCaptureBridge />
       <Environment />
       <Suspense fallback={null}>
         <World />

@@ -8,6 +8,7 @@ import { DEG, bearingToRotY, wrap360, round } from '../lib/geo.js'
 import { poseAt } from '../lib/physics.js'
 import { deformPositions } from '../lib/crush.js'
 import { buildProcedural, flattenGlb, makeMaterials } from '../lib/models.js'
+import useTransientLabel from './useTransientLabel.js'
 
 // ---- is a custom .glb present? (HEAD request, cached; dev servers answer html for missing files)
 const glbCache = new Map()
@@ -129,6 +130,7 @@ export default function Vehicle({ v }) {
   const gizmo = useStore((s) => s.gizmo)
   const lightsOn = useStore(lightsSel)
   const labels = useStore((s) => s.layers.labels)
+  const { visible: labelVisible, generation: labelGeneration } = useTransientLabel(v.id)
   const lastT = useRef(0)
 
   // playback: drive the pose imperatively so React does not re-render every frame
@@ -191,9 +193,9 @@ export default function Vehicle({ v }) {
         </Boundary>
         {lightsOn && spec.kind !== 'person' && <Headlights spec={spec} />}
         {selected && <SelectionRing spec={spec} />}
-        {labels && (
-          <Html position={[0, spec.H + 0.8, 0]} center style={{ pointerEvents: 'none' }} zIndexRange={[20, 0]}>
-            <div className={`ft-tag ${selected ? 'ft-tag-on' : ''}`}>
+        {labels && labelVisible && (
+          <Html position={[0, spec.H + 0.45, 0]} center style={{ pointerEvents: 'none' }} zIndexRange={[20, 0]}>
+            <div key={labelGeneration} className={`ft-tag ft-tag-transient ${selected ? 'ft-tag-on' : ''}`}>
               <strong>{v.name}</strong>
               {v.licensePlate && <span>{v.licensePlate}</span>}
               {v.vin && <span>VIN {v.vin}</span>}

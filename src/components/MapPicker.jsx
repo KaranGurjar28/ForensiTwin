@@ -178,7 +178,12 @@ export default function MapPicker() {
       choose(lat,lon,result.formatted_address)
       map.current?.flyCameraTo?.({endCamera:{center:{lat,lng:lon,altitude:0},range:Math.max(1000,radius*2.15),tilt:53,heading:0},durationMillis:1100})
       setQuery('');setTool('select')
-    } catch(err) {setError(err.message||'Geocoding failed. Check API settings.')} finally{setSearching(false)}
+    } catch(err) {
+      const message = String(err?.message || err || '')
+      setError(/REQUEST_DENIED|not allowed to use the geocoder|ApiNotActivatedMapError|ApiTargetBlockedMapError/i.test(message)
+        ? 'Location search is blocked by your Google Cloud API key. Enable the Geocoding API, allow it under the key’s API restrictions, and authorize this website under Website restrictions. Then retry.'
+        : message || 'Geocoding failed. Check Google Cloud API settings.')
+    } finally{setSearching(false)}
   }
   const locateMe=()=>{
     if(!navigator.geolocation){setError('Geolocation unavailable.');return}

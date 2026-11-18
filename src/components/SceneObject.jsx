@@ -5,6 +5,7 @@ import * as THREE from 'three'
 import { useStore } from '../store.js'
 import { CATALOG } from '../lib/catalog.js'
 import { bearingToRotY, wrap360, DEG, round } from '../lib/geo.js'
+import useTransientLabel from './useTransientLabel.js'
 
 function PersonModel({ color, pose = 'standing' }) {
   const lying = pose.startsWith('lying')
@@ -228,6 +229,7 @@ export default function SceneObject({ v }) {
   const editable = useStore((s) => s.time === 0 && !s.playing)
   const gizmo = useStore((s) => s.gizmo)
   const labels = useStore((s) => s.layers.labels)
+  const { visible: labelVisible, generation: labelGeneration } = useTransientLabel(v.id)
   const heightAt = useStore((s) => s.heightAt)
   const beforeImpact = useStore((s) => s.time < 0)
   const personOrAnimal = spec?.category === 'person' || spec?.category === 'animal'
@@ -274,9 +276,9 @@ export default function SceneObject({ v }) {
       >
         <ObjectModel v={shown} spec={spec} />
         {selected && <SelectionRing spec={spec} />}
-        {labels && (
-          <Html position={[0, spec.H + 0.45, 0]} center style={{ pointerEvents: 'none' }} zIndexRange={[20, 0]}>
-            <div className={`ft-tag ${selected ? 'ft-tag-on' : ''}`}>{v.name}</div>
+        {labels && labelVisible && (
+          <Html position={[0, spec.H + 0.3, 0]} center style={{ pointerEvents: 'none' }} zIndexRange={[20, 0]}>
+            <div key={labelGeneration} className={`ft-tag ft-tag-transient ${selected ? 'ft-tag-on' : ''}`}>{v.name}</div>
           </Html>
         )}
       </group>

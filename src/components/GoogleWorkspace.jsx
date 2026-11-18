@@ -99,6 +99,18 @@ export default function GoogleWorkspace() {
   const objects = useStore((s) => s.objects)
   const markers = useStore((s) => s.markers)
   const selectedId = useStore((s) => s.selectedId)
+  const labelEvent = useStore((s) => s.labelEvent)
+  const labelsEnabled = useStore((s) => s.layers.labels)
+  const [visibleLabelId, setVisibleLabelId] = useState(null)
+
+  // Native Google 3D markers have labels, but no supported CSS fade API.
+  // Keep the 3D model/pin; remove only its text five seconds after add/click.
+  useEffect(() => {
+    if (!labelEvent?.id) { setVisibleLabelId(null); return }
+    setVisibleLabelId(labelEvent.id)
+    const timer = window.setTimeout(() => setVisibleLabelId(null), 5000)
+    return () => window.clearTimeout(timer)
+  }, [labelEvent?.id, labelEvent?.seq])
   const placing = useStore((s) => s.placing)
   const time = useStore((s) => s.time)
   const playing = useStore((s) => s.playing)
@@ -237,7 +249,7 @@ export default function GoogleWorkspace() {
     for (const item of items) {
       seen.add(item.id)
       let pair = old.get(item.id)
-      const label = item.selected ? `● ${item.name}` : item.name
+      const label = labelsEnabled && visibleLabelId === item.dataId ? item.name : ''
       const position = itemPosition(projector, item.x, item.z)
       if (!pair) {
         let model = null
@@ -269,7 +281,7 @@ export default function GoogleWorkspace() {
             // Do not send a marker click into ground placement/movement.
             event.stopPropagation?.()
             const s = useStore.getState()
-            if (item.type === 'evidence') s.setTab('evidence')
+            if (item.type === 'evidence') { s.flashLabel(item.dataId); s.setTab('evidence') }
             else { s.select(item.dataId); s.setTab('vehicles') }
           })
         }
@@ -307,7 +319,7 @@ export default function GoogleWorkspace() {
         old.delete(id)
       }
     }
-  }, [items, ready, projector])
+  }, [items, ready, projector, labelsEnabled, visibleLabelId])
 
   // Investigator-authored overlays only. The underlying Google map supplies
   // visual context, not editable basemap geometry.

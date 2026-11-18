@@ -135,7 +135,7 @@ export const useStore = create((set, get) => ({
         worldStats: null,
         tab: s.tab === 'scene' ? 'vehicles' : s.tab,
         terrain: makeFlatSampler(), terrainStatus: 'unavailable',
-        ...(changedPlace && !preserve ? { vehicles: [], objects: [], selectedId: null, markers: [], evidenceAssessment: {}, cameraFootage: [], time: 0, playing: false } : {}),
+        ...(changedPlace && !preserve ? { vehicles: [], objects: [], selectedId: null, labelEvent: null, markers: [], evidenceAssessment: {}, cameraFootage: [], time: 0, playing: false } : {}),
       }))
       return true
     } catch (err) {
@@ -176,9 +176,14 @@ export const useStore = create((set, get) => ({
   vehicles: [],
   objects: [],
   selectedId: null,
+  labelEvent: null, // transient label notification, including repeat-click on the same object
   gizmo: 'translate',
   setGizmo: (gizmo) => set({ gizmo }),
-  select: (selectedId) => set({ selectedId }),
+  flashLabel: (id) => set((s) => ({ labelEvent: { id, seq: (s.labelEvent?.seq || 0) + 1 } })),
+  select: (selectedId) => set((s) => ({
+    selectedId,
+    labelEvent: selectedId ? { id: selectedId, seq: (s.labelEvent?.seq || 0) + 1 } : null,
+  })),
   editDamageOnClick: false,
   setEditDamageOnClick: (editDamageOnClick) => set({ editDamageOnClick }),
 
@@ -192,7 +197,8 @@ export const useStore = create((set, get) => ({
       vin: '',
       speedometerKmh: '',
     })
-    set({ vehicles: [...vs, v], selectedId: v.id, tab: 'vehicles' })
+    set((s) => ({ vehicles: [...vs, v], selectedId: v.id, tab: 'vehicles',
+      labelEvent: { id: v.id, seq: (s.labelEvent?.seq || 0) + 1 } }))
   },
   updateVehicle: (id, patch) => set((s) => ({ vehicles: s.vehicles.map((v) => (v.id === id ? { ...v, ...patch } : v)) })),
   changeType: (id, type) => {
@@ -220,7 +226,8 @@ export const useStore = create((set, get) => ({
       licensePlate: '', vin: '', speedometerKmh: '',
       x: src.x + 4, z: src.z + 3,
     }
-    set((s) => ({ vehicles: [...s.vehicles, v], selectedId: v.id }))
+    set((s) => ({ vehicles: [...s.vehicles, v], selectedId: v.id,
+      labelEvent: { id: v.id, seq: (s.labelEvent?.seq || 0) + 1 } }))
   },
 
   addObject: (type) => {
@@ -234,7 +241,8 @@ export const useStore = create((set, get) => ({
       speed: 0, skid: 0, postDist: 0, mass: 0,
       crush: 0, licensePlate: '', vin: '', speedometerKmh: '',
     })
-    set({ objects: [...objects, v], selectedId: v.id, tab: 'vehicles' })
+    set((s) => ({ objects: [...objects, v], selectedId: v.id, tab: 'vehicles',
+      labelEvent: { id: v.id, seq: (s.labelEvent?.seq || 0) + 1 } }))
   },
   updateObject: (id, patch) => set((s) => ({ objects: s.objects.map((v) => (v.id === id ? { ...v, ...patch } : v)) })),
   changeObjectType: (id, type) => {
@@ -249,7 +257,8 @@ export const useStore = create((set, get) => ({
     if (!src) return
     const n = get().objects.filter((item) => item.type === src.type).length + 1
     const v = { ...src, id: uid(), name: `${CATALOG[src.type]?.label ?? 'Object'} ${n}`, x: src.x + 2, z: src.z + 2 }
-    set((s) => ({ objects: [...s.objects, v], selectedId: v.id }))
+    set((s) => ({ objects: [...s.objects, v], selectedId: v.id,
+      labelEvent: { id: v.id, seq: (s.labelEvent?.seq || 0) + 1 } }))
   },
   nudgeHeading: (id, d) => {
     const vehicle = get().vehicles.find((v) => v.id === id)
@@ -273,9 +282,13 @@ export const useStore = create((set, get) => ({
   markers: [],
   placing: null, // marker kind currently being placed, or null
   setPlacing: (placing) => set({ placing, tool: placing ? 'marker' : get().tool === 'marker' ? 'select' : get().tool }),
-  addMarker: (kind, x, z) => set((s) => ({
-    markers: [...s.markers, { id: uid(), kind, x, z, n: s.markers.length + 1, note: '', photo: null }],
-  })),
+  addMarker: (kind, x, z) => set((s) => {
+    const id = uid()
+    return {
+      markers: [...s.markers, { id, kind, x, z, n: s.markers.length + 1, note: '', photo: null }],
+      labelEvent: { id, seq: (s.labelEvent?.seq || 0) + 1 },
+    }
+  }),
   updateMarker: (id, p) => set((s) => ({ markers: s.markers.map((m) => (m.id === id ? { ...m, ...p } : m)) })),
   removeMarker: (id) => set((s) => ({
     markers: s.markers.filter((m) => m.id !== id).map((m, i) => ({ ...m, n: i + 1 })),
@@ -312,8 +325,26 @@ export const useStore = create((set, get) => ({
   // ---- bridge to the WebGL canvas (set by <Bridge/> inside the Canvas)
   snapshotFn: null,
   screenshotFn: null,
+  videoFrameFn: null,
 
   // ---- persistence
+  // Unlike the small case-file snapshot, workspace export retains the complete
+  // OSM/vector-tile geometry so a restored scene works without refetching.
+  serializeWorkspace: () => {
+    const s = get()
+    const snapshot = s.osm.data || (s.location ? createTracedScene(s.location, s.radius, s.siteLayout) : null)
+    const origin = s.osm.origin || (s.location ? {
+      lat: Number(s.location.lat), lon: Number(s.location.lon), radius: s.radius,
+      source: 'Investigator-traced workspace',
+    } : null)
+    return {
+      ...s.serialize(),
+      version: 5,
+      fileType: 'ForensiTwin Editable 3D Workspace',
+      mapSnapshot: snapshot,
+      mapOrigin: origin,
+    }
+  },
   serialize: () => {
     const s = get()
     return {
@@ -339,7 +370,7 @@ export const useStore = create((set, get) => ({
       env: { ...DEFAULT_ENV, ...d.env }, layers: { ...DEFAULT_LAYERS, ...d.layers },
       caseInfo: d.caseInfo ?? { number: '', investigator: '', notes: '' },
       physics: { pair:null, e:0.25, normalDeg:null, grade:0, eff:1, collisionType:'vehicle_vehicle_head_on', primaryVehicleId:'', collisionTargetKind:'vehicle', collisionTargetId:'', impactAngleDeg:0, impactSequence:'primary', ...d.physics },
-      selectedId: null, time: 0, playing: false, tool: 'select', ruler: [],
+      selectedId: null, labelEvent: null, time: 0, playing: false, tool: 'select', ruler: [],
     })
     // When saved geometry is included, restore that EXACT site before querying
     // a mutable public map. A cached map is never silently swapped to another site.

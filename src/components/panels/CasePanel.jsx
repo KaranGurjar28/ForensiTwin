@@ -2,27 +2,35 @@ import NearestPolicePanel from './NearestPolicePanel.jsx'
 import { useRef, useState } from 'react'
 import { useStore } from '../../store.js'
 import { generateReport } from '../../lib/report.js'
+import { saveWorkspaceFiles } from '../../lib/workspaceFiles.js'
 
 export default function CasePanel() {
   const caseInfo = useStore((s) => s.caseInfo)
   const setCaseInfo = useStore((s) => s.setCaseInfo)
-  const serialize = useStore((s) => s.serialize)
   const restore = useStore((s) => s.restore)
   const [busy, setBusy] = useState(false)
+  const [savingWorkspace, setSavingWorkspace] = useState(false)
   const [msg, setMsg] = useState('')
   const fileRef = useRef()
 
-  const saveFile = () => {
-    const data = JSON.stringify(serialize(), null, 2)
-    const blob = new Blob([data], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `forensitwin-${(caseInfo.number || 'case').replace(/\s+/g, '_')}.json`
-    document.body.appendChild(a)
-    a.click()
-    a.remove()
-    setTimeout(()=>URL.revokeObjectURL(url),1200)
+  const saveFile = async () => {
+    if (savingWorkspace) return
+    setSavingWorkspace(true)
+    setMsg('')
+    try {
+      const result = await saveWorkspaceFiles()
+      if (result.cancelled) {
+        setMsg('Save cancelled. No files were changed.')
+      } else if (result.method === 'folder') {
+        setMsg(`Saved both files to your selected folder (${result.featureCount} GeoJSON features).`)
+      } else {
+        setMsg('Started both downloads. If one is missing, allow multiple downloads for this site.')
+      }
+    } catch (err) {
+      setMsg(`Save failed: ${err.message || err}`)
+    } finally {
+      setSavingWorkspace(false)
+    }
   }
 
   const loadFile = (e) => {
@@ -32,6 +40,7 @@ export default function CasePanel() {
     reader.onload = async () => {
       try {
         const data = JSON.parse(reader.result)
+        if (!data || !data.location || !Array.isArray(data.vehicles)) throw new Error('Not a ForensiTwin workspace JSON file.')
         setMsg('Loading case…')
         await restore(data)
         setMsg('Case loaded.')
@@ -68,10 +77,10 @@ export default function CasePanel() {
 
       <div className="ft-block">
         <div className="ft-block-title">Save &amp; reload</div>
-        <p className="ft-hint">Case JSON saves the traced road/building geometry, vehicles, evidence fields, and selected camera-video stills. Keep original CCTV recordings separately; their video bytes are not included.</p>
+        <p className="ft-hint">Save creates two separate files in the folder you choose: a complete editable 3D workspace JSON (vehicles, evidence, settings and geometry) and a WGS84 GeoJSON for importing roads and buildings. On browsers without folder selection, both files download separately. Google 3D imagery and original CCTV video bytes are not included.</p>
         <div className="ft-btnrow">
-          <button className="ft-secondary" onClick={saveFile}>Save case file</button>
-          <button className="ft-secondary" onClick={() => fileRef.current?.click()}>Load case file</button>
+          <button className="ft-secondary" disabled={savingWorkspace} onClick={saveFile}>{savingWorkspace ? 'Saving workspace…' : 'Save workspace (2 files)'}</button>
+          <button className="ft-secondary" onClick={() => fileRef.current?.click()}>Load 3D workspace JSON</button>
         </div>
         <input ref={fileRef} type="file" accept="application/json" hidden onChange={loadFile} />
       </div>

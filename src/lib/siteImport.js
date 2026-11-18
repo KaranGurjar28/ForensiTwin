@@ -103,7 +103,7 @@ export function parseSiteGeoJSON(geojson, center, radius = 800, { interpretUntyp
   if (!geojson || typeof geojson !== 'object') throw Error('This is not a GeoJSON object.')
   const features = geojson.type === 'FeatureCollection' ? geojson.features : geojson.type === 'Feature' ? [geojson] : null
   if (!Array.isArray(features)) throw Error('Expected a GeoJSON FeatureCollection or Feature.')
-  if (features.length > 5000) throw Error('GeoJSON contains more than 5,000 features. Export only the incident area.')
+  if (features.length > 15000) throw Error('GeoJSON contains more than 15,000 features. Export only the incident area.')
   const proj = makeProjector(+center.lat, +center.lon)
   const selectedRadius = clamp(+radius || 800, 250, 1500)
   const roads = [], buildings = []
@@ -115,19 +115,19 @@ export function parseSiteGeoJSON(geojson, center, radius = 800, { interpretUntyp
       ? /LineString$/.test(geometry.type) ? 'road' : /Polygon$/.test(geometry.type) ? 'building' : null
       : null)
     const name = propString(props, 'name', 'road_name', 'reference', 'ref')
-    if (kind === 'road' && roads.length < 600) {
+    if (kind === 'road' && roads.length < 1800) {
       const lines = geometry.type === 'LineString' ? [geometry.coordinates]
         : geometry.type === 'MultiLineString' ? geometry.coordinates : []
       for (const line of lines) {
-        if (roads.length >= 600) break
+        if (roads.length >= 1800) break
         for (const valid of lineSegments(line)) {
           if (!nearSite(valid, proj, selectedRadius)) continue
           roads.push({ name: name || `Survey road ${roads.length + 1}`, points: simplify(valid),
             width: propNumber(props, 6.6, 2, 32, 'width_m', 'road_width_m', 'roadWidth', 'width') })
-          if (roads.length >= 600) break
+          if (roads.length >= 1800) break
         }
       }
-    } else if (kind === 'building' && buildings.length < 600) {
+    } else if (kind === 'building' && buildings.length < 1800) {
       const polys = geometry.type === 'Polygon' ? [geometry.coordinates]
         : geometry.type === 'MultiPolygon' ? geometry.coordinates : []
       for (const polygon of polys) {
@@ -135,7 +135,7 @@ export function parseSiteGeoJSON(geojson, center, radius = 800, { interpretUntyp
         if (valid.length < 3 || !nearSite(valid, proj, selectedRadius)) continue
         buildings.push({ name: name || `Survey building ${buildings.length + 1}`, points: simplify(valid),
           height: propNumber(props, 8, 2, 200, 'height_m', 'building_height_m', 'height', 'estimated_height') })
-        if (buildings.length >= 600) break
+        if (buildings.length >= 1800) break
       }
     } else skipped++
   }
