@@ -9,6 +9,7 @@ import { poseAt } from '../lib/physics.js'
 import { deformPositions } from '../lib/crush.js'
 import { buildProcedural, flattenGlb, makeMaterials } from '../lib/models.js'
 import useTransientLabel from './useTransientLabel.js'
+import useSceneDrag from './useSceneDrag.js'
 
 // ---- is a custom .glb present? (HEAD request, cached; dev servers answer html for missing files)
 const glbCache = new Map()
@@ -131,19 +132,19 @@ export default function Vehicle({ v }) {
   const lightsOn = useStore(lightsSel)
   const labels = useStore((s) => s.layers.labels)
   const { visible: labelVisible, generation: labelGeneration } = useTransientLabel(v.id)
-  const lastT = useRef(0)
+  const gizmoDragging = useRef(false)
+  const drag = useSceneDrag({ id: v.id, kind: 'vehicle', groupRef, heightOffset: 0.16 })
 
-  // playback: drive the pose imperatively so React does not re-render every frame
-   useFrame(() => {
+  // Playback updates must not overwrite positions while the user is dragging.
+  useFrame(() => {
     const g = groupRef.current
-    if (!g) return
+    if (!g || drag.isDragging() || gizmoDragging.current) return
     const st = useStore.getState()
     const t = st.time
     const p = t === 0 ? { x: v.x, z: v.z, bearing: v.heading } : poseAt(v, t)
     const y = st.heightAt(p.x, p.z)
     g.position.set(p.x, y + 0.16, p.z)
     g.rotation.set(0, bearingToRotY(p.bearing), 0)
-    lastT.current = t
   })
   const onChange = () => {
     const g = groupRef.current
@@ -164,10 +165,15 @@ export default function Vehicle({ v }) {
         ref={setRef}
         position={[v.x, 0.16, v.z]}
         rotation={[0, bearingToRotY(v.heading), 0]}
+        onPointerDown={drag.onPointerDown}
+        onPointerMove={drag.onPointerMove}
+        onPointerUp={drag.onPointerUp}
+        onPointerCancel={drag.onPointerCancel}
         onClick={(e) => {
           const st = useStore.getState()
           if (st.placing) return
           e.stopPropagation()
+          if (drag.consumeMovedClick()) return
           st.select(v.id)
           if (st.editDamageOnClick && st.time >= 0 && spec && !spec.noCrush) {
             // Ground truth is supplied by the investigator: click only selects a
@@ -214,6 +220,8 @@ export default function Vehicle({ v }) {
           showZ={gizmo === 'translate'}
           size={0.9}
           rotationSnap={null}
+          onMouseDown={() => { gizmoDragging.current = true; useStore.setState({ draggingSceneId: v.id }) }}
+          onMouseUp={() => { onChange(); gizmoDragging.current = false; useStore.setState({ draggingSceneId: null }) }}
           onObjectChange={onChange}
         />
       )}

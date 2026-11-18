@@ -13,6 +13,7 @@ export default function CameraRig() {
   const controls = useRef()
   const { camera } = useThree()
   const mode = useStore((s) => s.cameraMode)
+  const draggingSceneId = useStore((s) => s.draggingSceneId)
   const prevMode = useRef(mode)
 
   useEffect(() => {
@@ -60,6 +61,7 @@ export default function CameraRig() {
     <OrbitControls
       ref={controls}
       makeDefault
+      enabled={!draggingSceneId}
       enableDamping
       dampingFactor={0.08}
       minDistance={3}

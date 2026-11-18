@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store.js'
+import { Output, WebMOutputFormat, BufferTarget, CanvasSource, Quality, getFirstEncodableVideoCodec } from 'mediabunny'
 
 const RATES = [0.25, 0.5, 1, 2]
 const RESOLUTIONS = {
@@ -7,7 +8,7 @@ const RESOLUTIONS = {
   '1440p': { width: 2560, height: 1440, bitrate: 24_000_000 },
   '4K': { width: 3840, height: 2160, bitrate: 45_000_000 },
 }
-const FPS = 30
+const FPS_OPTIONS = [30, 60]
 const nextFrame = () => new Promise((resolve) => requestAnimationFrame(resolve))
 
 function drawBrand(ctx, width, height, caseNumber, time) {
@@ -60,6 +61,7 @@ export default function PlaybackBar() {
   const raf = useRef(null)
   const last = useRef(0)
   const [resolution, setResolution] = useState('1440p')
+  const [fps, setFps] = useState(60)
   const [exporting, setExporting] = useState(false)
   const [exportMessage, setExportMessage] = useState('')
 
@@ -84,105 +86,104 @@ export default function PlaybackBar() {
 
   const exportVideo = async () => {
     if (exporting) return
-    if (!window.MediaRecorder || !HTMLCanvasElement.prototype.captureStream) {
-      setExportMessage('Video export requires Chrome or Edge with MediaRecorder and canvas capture support.')
+    if (typeof window.VideoEncoder === 'undefined') {
+      setExportMessage('Frame-accurate export requires a current Chrome or Edge browser with WebCodecs support.')
       return
     }
     const createCapture = useStore.getState().videoFrameFn
     if (typeof createCapture !== 'function') {
-      setExportMessage('Open Editable 3D and wait for the 3D renderer before exporting.')
+      setExportMessage('Open Editable 3D and wait for the renderer before exporting.')
       return
     }
+
     const settings = RESOLUTIONS[resolution]
-    setExporting(true)
-    setExportMessage(`Preparing ${resolution} WebGL video renderer…`)
     const originalTime = useStore.getState().time
-    let capture, recorder, stream, exportRaf = null
+    setExporting(true)
+    setExportMessage(`Preparing offline ${resolution} / ${fps} FPS export…`)
+    let capture = null
+    let output = null
+
     try {
+      // This is an offline render: simulation time advances by exactly 1/FPS
+      // for every encoded frame, regardless of how slowly the GPU renders.
       useStore.setState({ playing: false, time: useStore.getState().tMin })
       await nextFrame()
       capture = createCapture(settings)
-      const output = document.createElement('canvas')
-      output.width = settings.width
-      output.height = settings.height
-      const ctx = output.getContext('2d', { alpha: false, desynchronized: false })
-      if (!ctx) throw new Error('The browser could not create the output canvas.')
-      const mimeType = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
-        .find((type) => MediaRecorder.isTypeSupported(type))
-      stream = output.captureStream(0)
-      const videoTrack = stream.getVideoTracks()[0]
-      const manualFrames = typeof videoTrack?.requestFrame === 'function'
-      if (!manualFrames) {
-        stream.getTracks().forEach((track) => track.stop())
-        stream = output.captureStream(FPS)
-      }
-      recorder = new MediaRecorder(stream, {
-        ...(mimeType ? { mimeType } : {}),
-        videoBitsPerSecond: settings.bitrate,
+
+      const canvas = document.createElement('canvas')
+      canvas.width = settings.width
+      canvas.height = settings.height
+      const ctx = canvas.getContext('2d', { alpha: false })
+      if (!ctx) throw new Error('Could not create the video output canvas.')
+
+      const format = new WebMOutputFormat()
+      const codec = await getFirstEncodableVideoCodec(['vp9', 'vp8'], {
+        width: settings.width,
+        height: settings.height,
+        frameRate: fps,
       })
-      const chunks = []
-      const finished = new Promise((resolve, reject) => {
-        recorder.ondataavailable = (event) => { if (event.data?.size) chunks.push(event.data) }
-        recorder.onerror = () => reject(new Error('The browser stopped recording. Try a lower resolution.'))
-        recorder.onstop = resolve
+      if (!codec) throw new Error(`${resolution} / ${fps} FPS encoding is not supported by this browser. Try 30 FPS or a lower resolution.`)
+
+      output = new Output({ format, target: new BufferTarget() })
+      const source = new CanvasSource(canvas, {
+        codec,
+        quality: new Quality({ bitrate: Math.round(settings.bitrate * fps / 30) }),
+        latencyMode: 'quality',
+        hardwareAcceleration: 'prefer-hardware',
       })
-      const simStart = useStore.getState().tMin
-      const simEnd = useStore.getState().tMax
-      const duration = Math.max(0.01, simEnd - simStart)
-      // Start with an actual 2K/4K WebGL render, not an upscaled screenshot.
-      const renderFrame = (t) => {
-        const source = capture.draw()
-        ctx.drawImage(source, 0, 0, settings.width, settings.height)
-        drawBrand(ctx, settings.width, settings.height, useStore.getState().caseInfo?.number || '', t)
-        if (manualFrames) stream.getVideoTracks()[0]?.requestFrame()
-      }
-      renderFrame(simStart)
-      recorder.start(1000)
-      const started = performance.now()
-      let lastRendered = -Infinity
-      let lastPercent = -1
-      await new Promise((resolve, reject) => {
-        const tick = (now) => {
-          try {
-            if (recorder.state === 'inactive') throw new Error('Recording ended before the replay completed.')
-            const elapsed = Math.max(0, (now - started) / 1000)
-            const t = Math.min(simEnd, simStart + elapsed)
-            useStore.setState({ time: t })
-            if (now - lastRendered >= 1000 / FPS || t >= simEnd) {
-              lastRendered = now
-              renderFrame(t)
-            }
-            const percent = Math.min(100, Math.round((t - simStart) / duration * 100))
-            if (percent !== lastPercent) {
-              lastPercent = percent
-              setExportMessage(`Recording ${resolution} replay… ${percent}%`)
-            }
-            if (t >= simEnd) { resolve(); return }
-            exportRaf = requestAnimationFrame(tick)
-          } catch (error) { reject(error) }
+      output.addVideoTrack(source, { frameRate: fps })
+      await output.start()
+
+      const state = useStore.getState()
+      const simStart = state.tMin
+      const simEnd = state.tMax
+      const duration = Math.max(1 / fps, simEnd - simStart)
+      const frameCount = Math.max(1, Math.ceil(duration * fps))
+      const caseNumber = state.caseInfo?.number || ''
+
+      for (let i = 0; i < frameCount; i++) {
+        const simulationTime = Math.min(simEnd, simStart + i / fps)
+        useStore.setState({ time: simulationTime, playing: false })
+
+        // Let React Three Fiber's useFrame callbacks position vehicles,
+        // camera, people and damage BEFORE capturing this simulation frame.
+        await nextFrame()
+        await nextFrame()
+        const frame = capture.draw()
+        ctx.drawImage(frame, 0, 0, settings.width, settings.height)
+        drawBrand(ctx, settings.width, settings.height, caseNumber, simulationTime)
+
+        // Explicit timestamps give a constant-frame-rate file. Waiting for
+        // encoding backpressure never causes skipped simulation frames.
+        await source.add(i / fps, 1 / fps, { keyFrame: i % (fps * 2) === 0 })
+        if (i % Math.max(1, Math.round(fps / 3)) === 0 || i === frameCount - 1) {
+          setExportMessage(`Rendering ${resolution} / ${fps} FPS… ${Math.round((i + 1) / frameCount * 100)}% (${i + 1}/${frameCount} frames)`)
         }
-        exportRaf = requestAnimationFrame(tick)
-      })
-      if (recorder.state === 'recording') recorder.stop()
-      await finished
-      const blob = new Blob(chunks, { type: recorder.mimeType || 'video/webm' })
-      if (!blob.size) throw new Error('The exported video was empty. Try 1080p or 1440p.')
+      }
+
+      source.close()
+      setExportMessage(`Finalizing ${resolution} / ${fps} FPS WebM video…`)
+      await output.finalize()
+      const buffer = output.target.buffer
+      if (!buffer?.byteLength) throw new Error('The encoded video is empty.')
+
+      const blob = new Blob([buffer], { type: 'video/webm' })
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
-      const safeCase = (useStore.getState().caseInfo?.number || 'case').replace(/[^\w-]+/g, '_')
+      const safeCase = (caseNumber || 'case').replace(/[^\w-]+/g, '_')
       link.href = url
-      link.download = `ForensiTwin_${safeCase}_${resolution}_crash-replay.webm`
+      link.download = `ForensiTwin_${safeCase}_${resolution}_${fps}fps_crash-replay.webm`
       document.body.appendChild(link)
       link.click()
       link.remove()
       window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
-      setExportMessage(`${resolution} WebM downloaded (${settings.width} × ${settings.height}). Verify playback in Chrome, Edge or VLC.`)
+      setExportMessage(`${resolution} / ${fps} FPS exported: ${frameCount} evenly timed frames. Offline rendering may take longer than the video duration.`)
     } catch (error) {
-      setExportMessage(`Video export failed: ${error?.message || error}. If 4K fails, try 1440p.`)
-      if (recorder?.state === 'recording') recorder.stop()
+      setExportMessage(`Video export failed: ${error?.message || error}. Try 30 FPS or a lower resolution.`)
     } finally {
-      if (exportRaf) cancelAnimationFrame(exportRaf)
-      stream?.getTracks?.().forEach((track) => track.stop())
+      if (output?.state === 'started') {
+        try { await output.cancel() } catch { /* best-effort cleanup */ }
+      }
       capture?.dispose?.()
       useStore.setState({ time: originalTime, playing: false })
       setExporting(false)
@@ -224,7 +225,15 @@ export default function PlaybackBar() {
             <option value="4K">4K / 2160p</option>
           </select>
         </label>
-        <button className="ft-export-video" disabled={exporting} onClick={exportVideo} title="Render and export the replay at the selected video resolution">
+        <label className="ft-video-fps" style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }}>
+          FPS
+          <select aria-label="Video export frame rate" value={fps} disabled={exporting}
+            onChange={(e) => setFps(Number(e.target.value))}
+            style={{ color: '#fff', background: '#263440', border: '1px solid #61707d', borderRadius: 6, padding: '5px 3px', fontSize: 11 }}>
+            {FPS_OPTIONS.map((value) => <option key={value} value={value}>{value} FPS</option>)}
+          </select>
+        </label>
+        <button className="ft-export-video" disabled={exporting} onClick={exportVideo} title="Offline frame-accurate export; no skipped simulation frames">
           {exporting ? 'Recording…' : 'Export video'}
         </button>
       </div>

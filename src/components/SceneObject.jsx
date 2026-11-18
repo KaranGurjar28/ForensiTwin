@@ -6,6 +6,7 @@ import { useStore } from '../store.js'
 import { CATALOG } from '../lib/catalog.js'
 import { bearingToRotY, wrap360, DEG, round } from '../lib/geo.js'
 import useTransientLabel from './useTransientLabel.js'
+import useSceneDrag from './useSceneDrag.js'
 
 function PersonModel({ color, pose = 'standing' }) {
   const lying = pose.startsWith('lying')
@@ -223,6 +224,8 @@ function SelectionRing({ spec }) {
 export default function SceneObject({ v }) {
   const spec = CATALOG[v.type]
   const groupRef = useRef(null)
+  const gizmoDragging = useRef(false)
+  const drag = useSceneDrag({ id: v.id, kind: 'object', groupRef })
   const [obj, setObj] = useState(null)
   const setRef = useCallback((node) => { groupRef.current = node; setObj(node) }, [])
   const selected = useStore((s) => s.selectedId === v.id)
@@ -237,7 +240,7 @@ export default function SceneObject({ v }) {
   const shown = personOrAnimal ? { ...v, __renderPose:renderPose } : v
   useFrame(() => {
     const g=groupRef.current
-    if(!g || !personOrAnimal) return
+    if(!g || !personOrAnimal || drag.isDragging() || gizmoDragging.current) return
     const st=useStore.getState()
     const f=Math.max(0,Math.min(1,st.time/1.5))
     const x=v.x + (Number(v.postCrashOffsetX)||0)*f
@@ -267,11 +270,15 @@ export default function SceneObject({ v }) {
         ref={setRef}
         position={[v.x, heightAt(v.x, v.z), v.z]}
         rotation={[0, bearingToRotY(v.heading), 0]}
+        onPointerDown={drag.onPointerDown}
+        onPointerMove={drag.onPointerMove}
+        onPointerUp={drag.onPointerUp}
+        onPointerCancel={drag.onPointerCancel}
         onClick={(e) => {
           const st = useStore.getState()
           if (st.placing) return
           e.stopPropagation()
-          st.select(v.id)
+          if (!drag.consumeMovedClick()) st.select(v.id)
         }}
       >
         <ObjectModel v={shown} spec={spec} />
@@ -290,6 +297,8 @@ export default function SceneObject({ v }) {
           showX={gizmo === 'translate'}
           showZ={gizmo === 'translate'}
           size={0.9}
+          onMouseDown={() => { gizmoDragging.current = true; useStore.setState({ draggingSceneId: v.id }) }}
+          onMouseUp={() => { onChange(); gizmoDragging.current = false; useStore.setState({ draggingSceneId: null }) }}
           onObjectChange={onChange}
         />
       )}
